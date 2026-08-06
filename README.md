@@ -146,11 +146,10 @@ not a trusted standalone runtime. Playbook Harness never rewrites that checkout
 or accepts it as an upgrade origin.
 
 1. Install Playbook Harness using curl or the trusted-clone flow above.
-2. In each existing project, preview and apply local reconciliation:
+2. In each existing project, apply local reconciliation:
 
    ```bash
    cd /path/to/project
-   pb-tasks init --dry-run
    pb-tasks init
    ```
 

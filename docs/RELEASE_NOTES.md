@@ -3,8 +3,8 @@
 ## Post-cutover migration and lifecycle hardening — 2026-08-06
 
 Existing Marketplace-era projects now have an explicit low-change transition:
-install the central Harness, run `pb-tasks init --dry-run` and `pb-tasks init`
-from each selected project root, review any generated guidance proposal, then
+install the central Harness, run `pb-tasks init` from each selected project
+root, review any generated guidance proposal, then
 remove only obsolete Playbook launchers/hooks. Reconciliation preserves
 `.agent/` history, mind maps, user-authored guidance, credentials, foreign
 hooks, and every unselected project. Installing another supported agent later
