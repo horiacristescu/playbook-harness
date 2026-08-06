@@ -79,7 +79,7 @@ that manual merging is required.
 | Provider | Project-local result | Current limit |
 | --- | --- | --- |
 | Claude Code | `CLAUDE.md`, `.claude/settings.local.json`, `.claude/.gitignore`, managed skills and commands | Bare terminal/IDE launch; warns if old Marketplace hooks may duplicate standalone hooks. |
-| Codex | `AGENTS.md`, `.codex/hooks.json` | Codex must have `[features] codex_hooks = true`; init reads but never edits `~/.codex/config.toml`. |
+| Codex | `AGENTS.md`, `.codex/hooks.json` | Codex must have `[features] hooks = true`; init reads but never edits `~/.codex/config.toml`. |
 | OMP | `AGENTS.md`, `.omp/extensions/playbook.ts`, `.omp/playbook.json` | Bare `omp` is enforced only when launched at the project root. `omp --no-extensions` is the emergency bypass. |
 | Pi | `AGENTS.md`, `.agent/pi/config/models.json`, `.agent/pi/sessions/` | Launch with `pb-pi`; the wrapper supplies extension loading and isolated project state. |
 | Antigravity (`agy`) | `GEMINI.md` guidance | Agy 1.1.10 has no verified project-local hook loader, so init reports guidance-only and never installs a global plugin. |
@@ -169,7 +169,7 @@ local integration; never delete unrelated Claude hooks.
   reset it blindly; use `--reinstall` only after understanding local changes.
 - **Init reports a conflict:** the target is user-owned or locally modified.
   Preserve it, review the generated proposal, and rerun init after resolving it.
-- **Codex says prerequisite:** enable Codex’s `codex_hooks` feature yourself,
+- **Codex says prerequisite:** enable Codex’s `hooks` feature yourself,
   then rerun init. Harness does not change the global setting.
 - **OMP works at root but not below it:** OMP 17.2.9 extension discovery is
   cwd-scoped. Launch from the project root or explicitly load the extension.

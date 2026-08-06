@@ -9,7 +9,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "b1968e49d4c216f84994412df91b40b55cc670589c8c38ec56ee6ebb582af906",
+      "sha256": "2b4670c1c04b04bba82f50fb93b451f1520f00d46855a6cf3b38f6412b258f08",
       "source": "README.md"
     },
     {
@@ -87,7 +87,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "2098e5a3d8af35e648f0fee7674ff4f9f5305088d94db20042471b3869deb585",
+      "sha256": "d92fdbe2439b603c508b08110b278bd060404a2a06427042fedc147f68ad44bf",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
