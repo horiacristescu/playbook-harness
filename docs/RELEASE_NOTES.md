@@ -1,5 +1,35 @@
 # Playbook Harness release notes
 
+## Post-cutover migration and lifecycle hardening — 2026-08-06
+
+Existing Marketplace-era projects now have an explicit low-change transition:
+install the central Harness, run `pb-tasks init --dry-run` and `pb-tasks init`
+from each selected project root, review any generated guidance proposal, then
+remove only obsolete Playbook launchers/hooks. Reconciliation preserves
+`.agent/` history, mind maps, user-authored guidance, credentials, foreign
+hooks, and every unselected project. Installing another supported agent later
+only requires rerunning init in projects where its local integration is wanted.
+
+The implementation review also hardened four release boundaries:
+
+- the public installer no longer accepts arbitrary `--repo` or `--ref` sources;
+- release audit recomputes complete manifest schema/source/mode/hash records;
+- interrupted fresh installs heal the complete owned `pb-*` launcher set on a
+  normal repeat;
+- public-checkout replacement pins the validated directory identity and uses
+  no-follow descriptor-relative mutation, so a raced symlink cannot redirect
+  deletion.
+
+Hardening evidence:
+
+- development code commit: `064cda2`;
+- audited public code commit: `82b3774`;
+- public code artifact manifest SHA-256:
+  `1f27a942a9af8ffd13af1c42933c069f29432a4a94a1cfef756915b617ba5270`;
+- focused migration/installer/artifact/publisher tests: 112 passed;
+- full regression: 1008 passed, 3 skipped (three macOS nesting probes were
+  rerun outside Codex's enclosing seatbelt and all 8 nesting tests passed).
+
 ## Standalone public cutover — 2026-08-06
 
 This is the first standalone Playbook Harness release on rolling public
