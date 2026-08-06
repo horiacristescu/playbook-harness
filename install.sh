@@ -15,12 +15,12 @@ set -euo pipefail
 # modes identical to the signed artifact manifest on every supported system.
 umask 022
 
-CANONICAL_REPO="https://github.com/horiacristescu/playbook-harness.git"
+PUBLIC_REPO="https://github.com/horiacristescu/playbook-harness.git"
+CANONICAL_REPO="$PUBLIC_REPO"
 INSTALL_DIR="${PLAYBOOK_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/playbook-harness}"
 BIN_DIR="${PLAYBOOK_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
 REPO_URL="$CANONICAL_REPO"
 REF="main"
-TEST_SOURCE=false
 REPAIR_LAUNCHERS=false
 OPERATION="install"
 LOCK_DIR=""
@@ -104,13 +104,10 @@ set_operation() {
   OPERATION=$requested
 }
 
-# --repo/--ref are deliberately undocumented hermetic-test seams.
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --install-dir) [ "$#" -ge 2 ] || die "--install-dir requires a directory"; INSTALL_DIR=$2; shift 2 ;;
     --bin-dir) [ "$#" -ge 2 ] || die "--bin-dir requires a directory"; BIN_DIR=$2; shift 2 ;;
-    --repo) [ "$#" -ge 2 ] || die "--repo requires a URL or path"; REPO_URL=$2; TEST_SOURCE=true; shift 2 ;;
-    --ref) [ "$#" -ge 2 ] || die "--ref requires a branch or tag"; REF=$2; TEST_SOURCE=true; shift 2 ;;
     --repair-launchers) REPAIR_LAUNCHERS=true; shift ;;
     --upgrade) set_operation upgrade; shift ;;
     --reinstall) set_operation reinstall; shift ;;
@@ -176,7 +173,7 @@ case "${BASH_SOURCE[0]:-}" in
     ;;
 esac
 
-if [ -n "$ON_DISK_GIT_ROOT" ] && [ -z "$SCRIPT_SOURCE" ] && [ "$TEST_SOURCE" = false ]; then
+if [ -n "$ON_DISK_GIT_ROOT" ] && [ -z "$SCRIPT_SOURCE" ]; then
   die "on-disk installer is not inside an audited Playbook Harness public checkout"
 fi
 
@@ -192,13 +189,9 @@ clean_git_tree() {
 
 remote_matches() {
   actual=$(git -C "$1" config --get remote.origin.url 2>/dev/null || true)
-  [ "$actual" = "$REPO_URL" ] && return 0
-  if [ "$TEST_SOURCE" = false ]; then
-    [ "$actual" = "$CANONICAL_REPO" ] || [ "$actual" = "${CANONICAL_REPO%.git}" ] \
-      || [ "$actual" = "git@github.com:horiacristescu/playbook-harness.git" ]
-    return
-  fi
-  return 1
+  [ "$actual" = "$CANONICAL_REPO" ] || [ "$actual" = "${CANONICAL_REPO%.git}" ] \
+    || [ "$actual" = "$PUBLIC_REPO" ] || [ "$actual" = "${PUBLIC_REPO%.git}" ] \
+    || [ "$actual" = "git@github.com:horiacristescu/playbook-harness.git" ]
 }
 
 managed_install_identity() {
@@ -254,7 +247,7 @@ acquire_lock() {
 
 test_fail_at() {
   point=$1
-  if [ "$TEST_SOURCE" = true ] && [ "${PLAYBOOK_TEST_FAIL_AT:-}" = "$point" ]; then
+  if [ "${PLAYBOOK_TEST_FAIL_AT:-}" = "$point" ]; then
     die "injected lifecycle failure at $point"
   fi
 }
@@ -515,6 +508,7 @@ if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
     exit 0
   fi
   self_audit "$INSTALL_DIR" || die "installed runtime audit failed; run an explicit validated reinstall"
+  write_shims
   printf 'Playbook Harness is already installed at %s\n' "$INSTALL_DIR"
   printf 'Upgrade: bash %s/install.sh --upgrade\n' "$INSTALL_DIR"
   printf 'Reinstall: bash %s/install.sh --reinstall\n' "$INSTALL_DIR"
@@ -535,13 +529,11 @@ if [ -n "$SCRIPT_SOURCE" ]; then
   source_branch=$(git -C "$SCRIPT_SOURCE" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   [ "$source_branch" = "$REF" ] \
     || die "local source checkout must be on $REF (found ${source_branch:-detached})"
-  if [ "$TEST_SOURCE" = false ]; then
-    source_remote=$(git -C "$SCRIPT_SOURCE" config --get remote.origin.url 2>/dev/null || true)
-    case "$source_remote" in
-      "$CANONICAL_REPO"|"${CANONICAL_REPO%.git}"|git@github.com:horiacristescu/playbook-harness.git) ;;
-      *) die "local source checkout has an unrecognized remote: $source_remote" ;;
-    esac
-  fi
+  source_remote=$(git -C "$SCRIPT_SOURCE" config --get remote.origin.url 2>/dev/null || true)
+  case "$source_remote" in
+    "$CANONICAL_REPO"|"${CANONICAL_REPO%.git}"|"$PUBLIC_REPO"|"${PUBLIC_REPO%.git}"|git@github.com:horiacristescu/playbook-harness.git) ;;
+    *) die "local source checkout has an unrecognized remote: $source_remote" ;;
+  esac
   CLONE_SOURCE=$SCRIPT_SOURCE
   SOURCE_COMMIT=$(git -C "$SCRIPT_SOURCE" rev-parse HEAD)
 else
@@ -571,6 +563,7 @@ self_audit "$STAGING_DIR" || die "candidate checkout failed its installed-tree a
 mv "$STAGING_DIR" "$INSTALL_DIR"
 STAGING_DIR=""
 
+test_fail_at after_runtime_publish
 write_shims
 
 printf '  Commands    %s/pb-tasks, pb-sandbox, pb-codex, pb-agy, pb-pi\n' "$BIN_DIR"

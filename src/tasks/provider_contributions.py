@@ -175,9 +175,12 @@ def _guidance_intents(
     if not target.is_file():
         return base, False
     existing = target.read_text(encoding="utf-8", errors="replace")
+    # Do not let the generic suffix in legacy commands such as
+    # `.claude/bin/tasks bootstrap` masquerade as current standalone guidance.
+    # User-authored Markdown remains untouched; reconciliation adds a managed
+    # proposal containing the current pb-* commands instead.
     incorporated = (
-        ("pb-tasks bootstrap" in existing or "tasks bootstrap" in existing)
-        and ("pb-tasks work" in existing or "tasks work" in existing)
+        "pb-tasks bootstrap" in existing and "pb-tasks work" in existing
     )
     if incorporated:
         return base, False

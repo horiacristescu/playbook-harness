@@ -146,7 +146,19 @@ not a trusted standalone runtime. Playbook Harness never rewrites that checkout
 or accepts it as an upgrade origin.
 
 1. Install Playbook Harness using curl or the trusted-clone flow above.
-2. In each project, run `pb-tasks init` and review its provider warnings.
+2. In each existing project, preview and apply local reconciliation:
+
+   ```bash
+   cd /path/to/project
+   pb-tasks init --dry-run
+   pb-tasks init
+   ```
+
+   Init preserves `.agent/` tasks, sessions, chat history, `MIND_MAP.md`, and
+   user-authored guidance. It refreshes only recognized Playbook-managed local
+   hooks/assets for every supported agent detected on the machine. If guidance
+   still uses `.claude/bin/tasks` or `.claude/bin/sandbox`, init preserves the
+   original and creates a current `pb-*` proposal under `.agent/templates/`.
 3. Verify the standalone runtime with `pb-tasks runtime-audit` and launch Claude
    in the project to confirm the local settings are active.
 4. Remove the old plugin and Marketplace declaration:
@@ -158,7 +170,11 @@ or accepts it as an upgrade origin.
 
 Project files and task history are retained. If init reports possible duplicate
 legacy hooks, remove only the old Playbook hook entries after verifying the new
-local integration; never delete unrelated Claude hooks.
+local integration; never delete unrelated Claude hooks. Obsolete project-local
+`.claude/bin/tasks` and `.claude/bin/sandbox` copies may be removed after all
+guidance uses `pb-*`. Re-running init later is safe and adds local integration
+for newly installed supported agents without scanning other projects or changing
+global provider settings.
 
 ## Troubleshooting
 

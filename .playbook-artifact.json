@@ -9,7 +9,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "2b4670c1c04b04bba82f50fb93b451f1520f00d46855a6cf3b38f6412b258f08",
+      "sha256": "0a088c9a5f103e74f1b8f21c8abac34189fdf236325b0761d78a0425267bf802",
       "source": "README.md"
     },
     {
@@ -105,7 +105,7 @@
     {
       "destination": "install.sh",
       "mode": "0755",
-      "sha256": "ee5d732037254b3f58f89b5fe501c6c5b541309897d37e867757c6851412bf08",
+      "sha256": "8a2e5cb80a005f1b158590e8c347cfa9b7342a297eb8da35748a5ac5fab2ce78",
       "source": "install.sh"
     },
     {
@@ -429,7 +429,7 @@
     {
       "destination": "src/tasks/provider_contributions.py",
       "mode": "0644",
-      "sha256": "f8926d04e7c3a18e67c1ac074c88dc6acdaa2372125be7c22b6d9409fbdb9b4e",
+      "sha256": "975628c6e8e7bb3c50181ae142fb71c27c4db71c3eec0be51c145ba7b0b58a88",
       "source": "src/tasks/provider_contributions.py"
     },
     {
