@@ -1,0 +1,485 @@
+{
+  "files": [
+    {
+      "destination": "LICENSE",
+      "mode": "0644",
+      "sha256": "99269dca6c1368d0d00df28307e90f7c2aa405aab2d9cfc675052c63f51a63b2",
+      "source": "LICENSE"
+    },
+    {
+      "destination": "README.md",
+      "mode": "0644",
+      "sha256": "b1968e49d4c216f84994412df91b40b55cc670589c8c38ec56ee6ebb582af906",
+      "source": "README.md"
+    },
+    {
+      "destination": "bin/pb-agy",
+      "mode": "0755",
+      "sha256": "ce4eeda708327cf8171959a0e57dff548e43fb1a5c9cf046b5e271930e1e176c",
+      "source": "bin/playbook-agy"
+    },
+    {
+      "destination": "bin/pb-codex",
+      "mode": "0755",
+      "sha256": "f11c7baee8e8f9194a392b46ea37b7a5996a5bb7da584da82c426d592ae701f0",
+      "source": "bin/playbook-codex"
+    },
+    {
+      "destination": "bin/pb-pi",
+      "mode": "0755",
+      "sha256": "ea998ac6dc78a2245fce73959a4a561b78491a2c8fd3e1dea21ff85fd9beb075",
+      "source": "bin/playbook-pi"
+    },
+    {
+      "destination": "bin/pb-sandbox",
+      "mode": "0755",
+      "sha256": "5816c7d50fe582039194ea8d6102a6365ee927e1907f6a01a705a8b7be57a923",
+      "source": "scripts/sandbox"
+    },
+    {
+      "destination": "bin/pb-tasks",
+      "mode": "0755",
+      "sha256": "ec48e1db92aff7d60635b49870e960aced882e2d12e545849ae106dfcb160e40",
+      "source": "bin/tasks"
+    },
+    {
+      "destination": "commands/freehand.md",
+      "mode": "0644",
+      "sha256": "f5e61ac919de2ffd3e2891a53d6224d8ecb0295a37a421b8620da228d5930477",
+      "source": ".claude/commands/freehand.md"
+    },
+    {
+      "destination": "commands/init.md",
+      "mode": "0644",
+      "sha256": "5ffa10f6b1cba071c2dd38d7efcef1ba427271bd2e567ba74b96316f0536df57",
+      "source": ".claude/commands/init.md"
+    },
+    {
+      "destination": "commands/intent.md",
+      "mode": "0644",
+      "sha256": "e793a20e0e444abfb474bded41ea5af023dc2413bfb8170ad4d4c38b7f5fe5e4",
+      "source": ".claude/commands/intent.md"
+    },
+    {
+      "destination": "commands/mindmap-optimize.md",
+      "mode": "0644",
+      "sha256": "316cd4cea4363ac7219695cfa0f4d0323a5359c0d11abc1f2f21318e6cec52fe",
+      "source": ".claude/commands/mindmap-optimize.md"
+    },
+    {
+      "destination": "commands/mindmap.md",
+      "mode": "0644",
+      "sha256": "dd4e769346fe9ab08060549778a84809d320d7b1b0e1865b517fdea2c8d23744",
+      "source": ".claude/commands/mindmap.md"
+    },
+    {
+      "destination": "commands/playbook.md",
+      "mode": "0644",
+      "sha256": "049a3126bd973ff3b9b860b55f8cb0df9d5eeb02613d9339972c80fc697dd3f4",
+      "source": ".claude/commands/playbook.md"
+    },
+    {
+      "destination": "commands/upgrade.md",
+      "mode": "0644",
+      "sha256": "4f99937b51d35fe59723d89984158f739496665c652c1dfa46e15ecce4ef17c1",
+      "source": ".claude/commands/upgrade.md"
+    },
+    {
+      "destination": "docs/RELEASE_NOTES.md",
+      "mode": "0644",
+      "sha256": "2098e5a3d8af35e648f0fee7674ff4f9f5305088d94db20042471b3869deb585",
+      "source": "docs/RELEASE_NOTES.md"
+    },
+    {
+      "destination": "docs/integrating-omp.md",
+      "mode": "0644",
+      "sha256": "76b22ef4f3ca658daec21f0b9efecfe9d01c2e6f7138e36039db6954cbf9b22a",
+      "source": "docs/integrating-omp.md"
+    },
+    {
+      "destination": "hooks/claude-standalone.json",
+      "mode": "0644",
+      "sha256": "ff5a7d81de4e447b55567c3955303f140400c1c378d2d828b92fdc75fd9c5d08",
+      "source": "hooks/claude-standalone.json"
+    },
+    {
+      "destination": "install.sh",
+      "mode": "0755",
+      "sha256": "2527f9b50e4e00ce473031c71fa798c486f3c636782691320fa629792975a6e1",
+      "source": "install.sh"
+    },
+    {
+      "destination": "scripts/base-template.md",
+      "mode": "0644",
+      "sha256": "0f0b9548aad0bc8020d0d9e5e41cdde61ca745be7c6e2374228c7fd4954ea071",
+      "source": "scripts/base-template.md"
+    },
+    {
+      "destination": "scripts/chat-log-hook",
+      "mode": "0755",
+      "sha256": "7ac0c1dbca9d35a532e32ca2411b9818dd5627f2a6e2cb9f1c37c907b5f061c1",
+      "source": "scripts/chat-log-hook"
+    },
+    {
+      "destination": "scripts/codex-apply-patch-hook",
+      "mode": "0755",
+      "sha256": "46997abf235213c608ca8a2573a85f823ef9f32159883da8fb41a4743dbc2a72",
+      "source": "scripts/codex-apply-patch-hook"
+    },
+    {
+      "destination": "scripts/codex-stop-hook",
+      "mode": "0755",
+      "sha256": "7fe11b7a04ecb98a75ab69d6eacb8f6702435fdce1526107f252eaa537132efa",
+      "source": "scripts/codex-stop-hook"
+    },
+    {
+      "destination": "scripts/codex-user-prompt-hook",
+      "mode": "0755",
+      "sha256": "dadad3be0f9433e30e986c17c6bb46dc68d202066fb06ef3464a8cf70ebaa194",
+      "source": "scripts/codex-user-prompt-hook"
+    },
+    {
+      "destination": "scripts/gate-echo-lib.sh",
+      "mode": "0755",
+      "sha256": "87f07db2f6f8c2a3020b2e9a1e5ebdacc1b8edfb1f18c8d4a4c796ae4829c542",
+      "source": "scripts/gate-echo-lib.sh"
+    },
+    {
+      "destination": "scripts/init",
+      "mode": "0755",
+      "sha256": "f976b82c4f480696cd19ef82306e913429dba9d8ebcf1e9423001374e6589ff3",
+      "source": "scripts/init"
+    },
+    {
+      "destination": "scripts/playbook-pi-hook-adapter.ts",
+      "mode": "0644",
+      "sha256": "4e9cd3b4427a61cf5f404a2b102f30b6fef42bfcb789862b99a29862f8208c73",
+      "source": "scripts/playbook-pi-hook-adapter.ts"
+    },
+    {
+      "destination": "scripts/playbook-pi-omlx-models.json",
+      "mode": "0644",
+      "sha256": "e726e5fe7de2985e4a516d4fffa2ec97e34abf413177db73f22c9af13d739d0a",
+      "source": "scripts/playbook-pi-omlx-models.json"
+    },
+    {
+      "destination": "scripts/playbooks-README.md",
+      "mode": "0644",
+      "sha256": "a8f650cd008f169f17a6e883cfd3e44432e320a8f016d280a27eeffeea5879f8",
+      "source": "scripts/playbooks-README.md"
+    },
+    {
+      "destination": "scripts/sandbox",
+      "mode": "0755",
+      "sha256": "5816c7d50fe582039194ea8d6102a6365ee927e1907f6a01a705a8b7be57a923",
+      "source": "scripts/sandbox"
+    },
+    {
+      "destination": "scripts/session-end-hook",
+      "mode": "0755",
+      "sha256": "60660d2e19fe1c9eef6e01f68d30ca46d755781964c7792ce9bd12ac6f87ea60",
+      "source": "scripts/session-end-hook"
+    },
+    {
+      "destination": "scripts/session-start-hook",
+      "mode": "0755",
+      "sha256": "fdc01db4b1485886418578cbb0faa302b4405a8cc75f1940bd7853c7cc7bc316",
+      "source": "scripts/session-start-hook"
+    },
+    {
+      "destination": "scripts/state-echo-hook",
+      "mode": "0755",
+      "sha256": "8020b6d08cd209303696cfd42c4f0bafc5c39476cd0640f2f1276986b850e136",
+      "source": "scripts/state-echo-hook"
+    },
+    {
+      "destination": "scripts/stop-hook",
+      "mode": "0755",
+      "sha256": "15eede39df370ad90658522906afeee625b45a43a62b3e0d759522a60196ab43",
+      "source": "scripts/stop-hook"
+    },
+    {
+      "destination": "scripts/task-gate-hook",
+      "mode": "0755",
+      "sha256": "f8a93c3ffbe74a6038634cfad6dffaee1187f42be755c18fb4ebd0f0da165748",
+      "source": "scripts/task-gate-hook"
+    },
+    {
+      "destination": "scripts/tasks",
+      "mode": "0755",
+      "sha256": "c719532ce4ee7cecdb5a97c848e0d95ce6ecd7ea32f9e85b7941022a76d1792d",
+      "source": "scripts/tasks"
+    },
+    {
+      "destination": "skills/attribution/SKILL.md",
+      "mode": "0644",
+      "sha256": "df32265defd3530fcd6aed359ba4629e1e48bf761f4b826a0b19005fc7dd104f",
+      "source": ".claude/skills/attribution/SKILL.md"
+    },
+    {
+      "destination": "skills/judge/SKILL.md",
+      "mode": "0644",
+      "sha256": "1e3c0ac9cb13d889da1393b341fb4a3fb5532bb87ab0fa2a184f72d51e36b419",
+      "source": ".claude/skills/judge/SKILL.md"
+    },
+    {
+      "destination": "skills/playbook/SKILL.md",
+      "mode": "0644",
+      "sha256": "bf402f4346c80a0cfa05bc4f4e560419cc2f1a53eca5f7b9632ac1a6ffb53ca5",
+      "source": ".claude/skills/playbook/SKILL.md"
+    },
+    {
+      "destination": "skills/playbook/mindmap-gen.md",
+      "mode": "0644",
+      "sha256": "0b0f8391d98dcf8a93c197f750a6f3d23c7c615f984b5fae52a3538491e8dc29",
+      "source": ".claude/skills/playbook/mindmap-gen.md"
+    },
+    {
+      "destination": "skills/playbook/mindmap.md",
+      "mode": "0644",
+      "sha256": "db3878e9e04d6e4d9a2f0646142a54d043495c07822be0c03fc4ef094e7d4598",
+      "source": ".claude/skills/playbook/mindmap.md"
+    },
+    {
+      "destination": "skills/playbook/ui-debug.md",
+      "mode": "0644",
+      "sha256": "692a3fac06bef5fd006ac5fb8a825533b00998bdac8906e884e91382cbdeb940",
+      "source": ".claude/skills/playbook/ui-debug.md"
+    },
+    {
+      "destination": "skills/stack/SKILL.md",
+      "mode": "0644",
+      "sha256": "e015dd7baa750755d9b7fde1401fe879e86e4120c2c4ab67992af63fcee28353",
+      "source": ".claude/skills/stack/SKILL.md"
+    },
+    {
+      "destination": "skills/stack/observability.md",
+      "mode": "0644",
+      "sha256": "6253ce2c91ba16fb76ab9d1b2bbb0974dd40c52712fb7b3bf2e296f90939874b",
+      "source": ".claude/skills/stack/observability.md"
+    },
+    {
+      "destination": "skills/stack/python.md",
+      "mode": "0644",
+      "sha256": "e136bc02f7f9ef01c3e0f021ca5bf7dd0b1289ebc33404a510e5d7f6bd1dd3df",
+      "source": ".claude/skills/stack/python.md"
+    },
+    {
+      "destination": "skills/stack/typescript.md",
+      "mode": "0644",
+      "sha256": "907f9171003d12761f64fd846ab93ad0650bb7c74107e0014cbdc3eafef11cf2",
+      "source": ".claude/skills/stack/typescript.md"
+    },
+    {
+      "destination": "skills/tasks/base-template.md",
+      "mode": "0644",
+      "sha256": "0f0b9548aad0bc8020d0d9e5e41cdde61ca745be7c6e2374228c7fd4954ea071",
+      "source": ".claude/skills/tasks/base-template.md"
+    },
+    {
+      "destination": "src/bash-log/bash-log.sh",
+      "mode": "0644",
+      "sha256": "690bac2ba860e6d9ae14c5b1f7470580baff5815a349c0ab26d4d773eb9dde22",
+      "source": "src/bash-log/bash-log.sh"
+    },
+    {
+      "destination": "src/bash-log/bash-log.zsh",
+      "mode": "0644",
+      "sha256": "503c8d9801e27fc951cec7c25944b21f7ebfe158bfe2a3e9cb912dceaaafae79",
+      "source": "src/bash-log/bash-log.zsh"
+    },
+    {
+      "destination": "src/provider/__init__.py",
+      "mode": "0644",
+      "sha256": "b84732e8d176b84720ef2c84283192bace986772f8a836588e627270fe4b7781",
+      "source": "src/provider/__init__.py"
+    },
+    {
+      "destination": "src/provider/adapter.py",
+      "mode": "0644",
+      "sha256": "30c9520d56f817441dd80b1adcb21d03f79a155741ed4b8a7e503be775561368",
+      "source": "src/provider/adapter.py"
+    },
+    {
+      "destination": "src/provider/adapters/__init__.py",
+      "mode": "0644",
+      "sha256": "b8fe442fe0cd7e92e0d5bfc52b9ec18b7caf7ffa8086ec16ac23450b4b52a671",
+      "source": "src/provider/adapters/__init__.py"
+    },
+    {
+      "destination": "src/provider/adapters/antigravity.py",
+      "mode": "0644",
+      "sha256": "4b2609549f49c3a7b5995c2779484761909af8bb3b21c808564117f79d67b70c",
+      "source": "src/provider/adapters/antigravity.py"
+    },
+    {
+      "destination": "src/provider/adapters/claude.py",
+      "mode": "0644",
+      "sha256": "8ddfef8340bf8538de575bedf6c3657dcfcc3fdcbcc461ba3571899f28457da8",
+      "source": "src/provider/adapters/claude.py"
+    },
+    {
+      "destination": "src/provider/adapters/codex.py",
+      "mode": "0644",
+      "sha256": "d99ba3629de8f7488e3f8a10be31a073da3c2a758960be0346a5da281cd7b06b",
+      "source": "src/provider/adapters/codex.py"
+    },
+    {
+      "destination": "src/provider/adapters/omp.py",
+      "mode": "0644",
+      "sha256": "b18a564f9170b0696e7624dab4094c66aacb1b7cac2b5a4a415c5fca0b105193",
+      "source": "src/provider/adapters/omp.py"
+    },
+    {
+      "destination": "src/provider/adapters/pi.py",
+      "mode": "0644",
+      "sha256": "e449276a338a85cd54dd4c56091972f0a7899a2a02321ae1d2de50fc64122241",
+      "source": "src/provider/adapters/pi.py"
+    },
+    {
+      "destination": "src/provider/capabilities.py",
+      "mode": "0644",
+      "sha256": "a620270a74060ecf89ea5a53c1fd8c02020bb15f11c8b1e200b62a4df493513a",
+      "source": "src/provider/capabilities.py"
+    },
+    {
+      "destination": "src/provider/claude_hooks.py",
+      "mode": "0644",
+      "sha256": "9808ce692e8ca99302477b8ff9ea40eb68be67453a5f72544a840f79aa0bc487",
+      "source": "src/provider/claude_hooks.py"
+    },
+    {
+      "destination": "src/provider/codex_hooks.py",
+      "mode": "0644",
+      "sha256": "f809ad167bb14cb179032a7d28c88b0389c8ab4c7016686ecdf2baaf58e307e4",
+      "source": "src/provider/codex_hooks.py"
+    },
+    {
+      "destination": "src/provider/events.py",
+      "mode": "0644",
+      "sha256": "8aed89ba273efa34a96cbff7ef5220bd971c4ed8cf8c1850284c1f6945f5032b",
+      "source": "src/provider/events.py"
+    },
+    {
+      "destination": "src/provider/models.json",
+      "mode": "0644",
+      "sha256": "056b8d3a2bb47b223a7e21c1074ada39b152e5e529d845792804ffbe7b536f3a",
+      "source": "src/provider/models.json"
+    },
+    {
+      "destination": "src/provider/policy.py",
+      "mode": "0644",
+      "sha256": "ec69ad1bf1b5e85e42f8180797413ba6a85b55b6505ea3bc3f8f87e93972a0bb",
+      "source": "src/provider/policy.py"
+    },
+    {
+      "destination": "src/provider/runtime_paths.py",
+      "mode": "0644",
+      "sha256": "983dd16c4413153e1ae613d21fed6470fd8138920950e5a97459156bb17c5822",
+      "source": "src/provider/runtime_paths.py"
+    },
+    {
+      "destination": "src/provider/sandbox.py",
+      "mode": "0644",
+      "sha256": "6444b7bc6d5a9f2fb62dd99404d1fd67e870ab6e88cf5bac9ee64c85c31d6f56",
+      "source": "src/provider/sandbox.py"
+    },
+    {
+      "destination": "src/provider/subagent.py",
+      "mode": "0644",
+      "sha256": "68dacb3186f9afafc1879700524d6c148bff728b50f3f14db25fdf420e547631",
+      "source": "src/provider/subagent.py"
+    },
+    {
+      "destination": "src/tasks/__init__.py",
+      "mode": "0644",
+      "sha256": "3defab55b025fa0b06c326424619573e06494c64b912f6681e10788f3e5bff7c",
+      "source": "src/tasks/__init__.py"
+    },
+    {
+      "destination": "src/tasks/cli.py",
+      "mode": "0644",
+      "sha256": "7a679bad68a94bd748d553359840479400ae2514394409c3377c4184049f40e8",
+      "source": "src/tasks/cli.py"
+    },
+    {
+      "destination": "src/tasks/core.py",
+      "mode": "0644",
+      "sha256": "2243d0a44f09735f62ae8ed0dd67549d12c1b8f11241108cc6b27315e3bec89f",
+      "source": "src/tasks/core.py"
+    },
+    {
+      "destination": "src/tasks/global_retro_collect.py",
+      "mode": "0644",
+      "sha256": "765f43994e48002366e64cc03aa8fc6d72f5f8ff5eb55e3087c8624aca8b0889",
+      "source": "src/tasks/global_retro_collect.py"
+    },
+    {
+      "destination": "src/tasks/installed_audit.py",
+      "mode": "0644",
+      "sha256": "3c0e450d41f96f8e6933723808eadc4fb089375b8100524b0207b4015fcfb0e2",
+      "source": "src/tasks/installed_audit.py"
+    },
+    {
+      "destination": "src/tasks/intent.py",
+      "mode": "0644",
+      "sha256": "ef77bbe4c57a2ee1c8927916a1ba558dc0148879240517deec7f48ca466ca78d",
+      "source": "src/tasks/intent.py"
+    },
+    {
+      "destination": "src/tasks/provider_contributions.py",
+      "mode": "0644",
+      "sha256": "f8926d04e7c3a18e67c1ac074c88dc6acdaa2372125be7c22b6d9409fbdb9b4e",
+      "source": "src/tasks/provider_contributions.py"
+    },
+    {
+      "destination": "src/tasks/provider_detection.py",
+      "mode": "0644",
+      "sha256": "82adfd506b9d2e7152196078f7ef58566833ebc38b91424d973ce6d755d058f3",
+      "source": "src/tasks/provider_detection.py"
+    },
+    {
+      "destination": "src/tasks/reconcile.py",
+      "mode": "0644",
+      "sha256": "5524c660fb96724c12b86cf8fdf6648f4ae7fa92b4f7f8535a3c0b1d9d3f8d9e",
+      "source": "src/tasks/reconcile.py"
+    },
+    {
+      "destination": "src/tasks/retro.py",
+      "mode": "0644",
+      "sha256": "1939aa9408c2c8c8cbe34f2b3336d05c0510069b90e7ceaa53729c58d467594b",
+      "source": "src/tasks/retro.py"
+    },
+    {
+      "destination": "src/tasks/runtime.py",
+      "mode": "0644",
+      "sha256": "3225bdfac09d2c807d4868868f2645ae507643091420f38352ffc05fe7a1f388",
+      "source": "src/tasks/runtime.py"
+    },
+    {
+      "destination": "src/tasks/template.py",
+      "mode": "0644",
+      "sha256": "de82c578b60e89ce9de27e1b5225c0ce27d4d5724cb94e5a4f1b0893e3a38dbb",
+      "source": "src/tasks/template.py"
+    },
+    {
+      "destination": "src/templates/CLAUDE.md",
+      "mode": "0644",
+      "sha256": "6f1770822d5af2fc4e55904ea109c6136e30b8cc59005c22731a1b0b9052eb35",
+      "source": "src/templates/CLAUDE.md"
+    },
+    {
+      "destination": "src/templates/reactive_test_environment.png",
+      "mode": "0644",
+      "sha256": "fb6df13349c0e9929dd364fb52202600adf1487c0afc0fead72d0a96d297303e",
+      "source": "src/templates/reactive_test_environment.png"
+    },
+    {
+      "destination": "src/templates/task_lifecycle.png",
+      "mode": "0644",
+      "sha256": "a3b697751ce6d98ac77341f459a08359898ff7928ab419123efa35a178ea1c8a",
+      "source": "src/templates/task_lifecycle.png"
+    }
+  ],
+  "schema": 1
+}

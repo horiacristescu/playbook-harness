@@ -1,0 +1,113 @@
+#!/bin/bash
+# stop-hook
+# Stop hook — prevents agent from finishing when task gates are unchecked.
+#
+# Reads active task's task.md, counts unchecked gates (- [ ]).
+# If any unchecked: exit 2 with message (blocks stopping).
+# If all checked, no active task, or stop_hook_active: exit 0.
+
+set -e
+
+# Skip when invoked from the monitor's own claude session — monitor runs in
+# the same project dir and would otherwise be blocked on the FRONT agent's
+# task gates. Launch-monitor exports PLAYBOOK_ROLE=monitor specifically.
+# Log to stderr so the skip is visible; only gate-enforcement skipped.
+if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
+    echo "[stop-hook] skip (PLAYBOOK_ROLE=monitor)" >&2
+    exit 0
+fi
+
+# Source shared lib (same directory)
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/gate-echo-lib.sh"
+
+# Find project root
+PROJECT_DIR=$(find_project_root)
+if [ -z "$PROJECT_DIR" ]; then
+    exit 0
+fi
+
+AGENT_DIR=$(resolve_agent_dir "$PROJECT_DIR")
+
+# Read stdin (Stop JSON) — extract stop_hook_active
+INPUT=$(cat)
+STOP_ACTIVE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stop_hook_active', False))" 2>/dev/null || echo "False")
+SESSION_ID="$(resolve_session_id)"
+
+# Safety valve: if already blocked once, allow stopping to prevent loops
+if [ "$STOP_ACTIVE" = "True" ]; then
+    exit 0
+fi
+
+# --- Eval mode: skip stop guard if stop_guard=off ---
+if [ -n "$PLAYBOOK_EVAL_CONFIG" ] && [ -f "$PLAYBOOK_EVAL_CONFIG" ]; then
+    EVAL_STOP=$(python3 -c "import json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('stop_guard','on'))" 2>/dev/null || echo "on")
+    if [ "$EVAL_STOP" = "off" ]; then
+        exit 0
+    fi
+fi
+
+SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
+STATE_FILE="$SESSION_DIR/current_state"
+
+# No active task — allow
+if [ ! -f "$STATE_FILE" ]; then
+    exit 0
+fi
+
+TASK=$(head -1 "$STATE_FILE" | tr -d '[:space:]')
+if [ -z "$TASK" ]; then
+    exit 0
+fi
+
+# Find task file
+TASK_FILE=$(find "$AGENT_DIR/tasks" -maxdepth 2 -name "task.md" -path "*/${TASK}-*/*" 2>/dev/null | head -1)
+
+if [ -z "$TASK_FILE" ]; then
+    exit 0
+fi
+
+# Count unchecked gates (only real gates at line start, not inside blockquotes)
+UNCHECKED=$(grep -cE '^[[:space:]]*- \[ \]' "$TASK_FILE" 2>/dev/null) || UNCHECKED=0
+
+if [ "$UNCHECKED" -eq 0 ]; then
+    exit 0
+fi
+
+# Counter-gated bypass: allow stop for conversational replies (low tool activity)
+# Missing counter file = assume work was done (block)
+COUNTER_FILE="$SESSION_DIR/counters"
+if [ -f "$COUNTER_FILE" ]; then
+    WRITES=$(read_counter "$COUNTER_FILE" writes)
+    TOOLS=$(read_counter "$COUNTER_FILE" tools)
+    if [ "${WRITES:-0}" -eq 0 ] && [ "${TOOLS:-0}" -lt 5 ]; then
+        exit 0
+    fi
+fi
+
+# Find first unchecked gate for the message
+FIRST_GATE=$(grep -m1 -E '^[[:space:]]*- \[ \]' "$TASK_FILE" 2>/dev/null | sed 's/^[[:space:]]*- \[ \] *//')
+
+# Freehand mode: don't block when the gate text starts with "Freehand" —
+# covers "Freehand", "Freehand — work is done", "Freehand debrief — ...",
+# and discussion-style variants observed in real task.md files. The single
+# exception is "Freehand log" (cleanup gate at cli.py:1620), which must
+# still block so its work runs before close.
+# Pattern stays in lockstep with scripts/state-echo-hook and src/provider/codex_hooks.py.
+case "$FIRST_GATE" in
+    "Freehand log"|"Freehand log"[!a-zA-Z0-9_]*)
+        : # cleanup gate — keep blocking
+        ;;
+    Freehand*)
+        exit 0
+        ;;
+esac
+
+cat >&2 <<MSG
+BLOCKED: ${UNCHECKED} unchecked gate(s) in task ${TASK}.
+
+First unchecked: ${FIRST_GATE}
+
+Complete all gates before finishing.
+MSG
+exit 2

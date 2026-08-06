@@ -1,0 +1,6 @@
+#!/bin/bash
+# Compatibility entry point; canonical init lives in the tasks CLI.
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+exec "$SCRIPT_DIR/tasks" init "$@"

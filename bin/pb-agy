@@ -1,0 +1,40 @@
+#!/bin/bash
+# pb-agy — launch Antigravity CLI (agy) with a per-session Playbook ID.
+#
+# Usage: pb-agy [agy-args...]
+#
+# Generates PLAYBOOK_SESSION_ID, provisions the session directory, then execs
+# agy so the agent inherits the env. GEMINI.md carries advisory workflow
+# instructions. Agy 1.1.10 has no verified project-local hook loader, and this
+# wrapper deliberately does not install or mutate its user-global plugin state.
+#
+# Canonical user-facing entry point. See src/provider/adapters/antigravity.py
+# launch_interactive() for the programmatic equivalent (assumes env pre-set).
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+RUNTIME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+SHARED_LIB="$RUNTIME_ROOT/scripts/gate-echo-lib.sh"
+if [ ! -f "$SHARED_LIB" ]; then
+    echo "Error: Playbook shared runtime missing: $SHARED_LIB" >&2
+    exit 1
+fi
+# shellcheck source=../scripts/gate-echo-lib.sh
+. "$SHARED_LIB"
+
+PROJECT_ROOT="$(find_project_root)"
+
+# PID-based session ID: pid-$$ (this wrapper's PID = parent of agy process)
+SESSION_ID="pid-$$"
+export PLAYBOOK_SESSION_ID="$SESSION_ID"
+export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
+
+# Provision session directory so state files have a home
+if [ -n "$PROJECT_ROOT" ]; then
+    AGENT_DIR="$(resolve_agent_dir "$PROJECT_ROOT")"
+    mkdir -p "$AGENT_DIR/sessions/$SESSION_ID"
+fi
+
+exec agy "$@"

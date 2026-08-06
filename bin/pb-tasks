@@ -1,0 +1,4 @@
+#!/bin/bash
+# tasks CLI — standalone, no Docker dependency
+export PYTHONDONTWRITEBYTECODE=1
+PYTHONPATH="$(dirname "$0")/../src" exec python3 -m tasks.cli "$@"

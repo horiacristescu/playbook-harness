@@ -1,0 +1,41 @@
+#!/bin/bash
+# session-end-hook
+# SessionEnd hook — cleans up per-session state directory.
+#
+# Parses session_id from stdin JSON, removes .agent/sessions/<session_id>/.
+
+set -e
+
+# Skip when invoked from the monitor's own claude session (see launch-monitor).
+# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
+if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
+    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
+    exit 0
+fi
+
+# Source shared lib (same directory)
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/gate-echo-lib.sh"
+
+# Find project root
+PROJECT_DIR=$(find_project_root)
+if [ -z "$PROJECT_DIR" ]; then
+    exit 0
+fi
+
+AGENT_DIR=$(resolve_agent_dir "$PROJECT_DIR")
+
+# Skip cleanup if .agent/ isn't writable (sandbox mode)
+if ! agent_dir_writable "$PROJECT_DIR"; then
+    exit 0
+fi
+
+# Session ID: pid-$PPID (matches session-start-hook)
+INPUT=$(cat)
+SESSION_ID="${PLAYBOOK_SESSION_ID:-pid-$PPID}"
+
+# Remove entire session directory (state + counters + offset)
+SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
+rm -rf "$SESSION_DIR"
+
+exit 0

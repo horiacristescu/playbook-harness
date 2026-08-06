@@ -1,0 +1,39 @@
+#!/bin/bash
+# pb-codex — launch Codex with a unique per-session Playbook session ID.
+#
+# Usage: pb-codex [codex-args...]
+#
+# Generates PLAYBOOK_SESSION_ID, provisions the session directory, then execs
+# codex so the agent inherits the env.  AGENTS.md in the project root tells
+# the Codex agent to run `pb-tasks bootstrap` as its first action.
+#
+# Canonical user-facing entry point.  See src/provider/adapters/codex.py
+# launch_interactive() for the programmatic equivalent (assumes env pre-set).
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+RUNTIME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+SHARED_LIB="$RUNTIME_ROOT/scripts/gate-echo-lib.sh"
+if [ ! -f "$SHARED_LIB" ]; then
+    echo "Error: Playbook shared runtime missing: $SHARED_LIB" >&2
+    exit 1
+fi
+# shellcheck source=../scripts/gate-echo-lib.sh
+. "$SHARED_LIB"
+
+PROJECT_ROOT="$(find_project_root)"
+
+# PID-based session ID: pid-$$ (this wrapper's PID = parent of codex process)
+SESSION_ID="pid-$$"
+export PLAYBOOK_SESSION_ID="$SESSION_ID"
+export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
+
+# Provision session directory so state files have a home
+if [ -n "$PROJECT_ROOT" ]; then
+    AGENT_DIR="$(resolve_agent_dir "$PROJECT_ROOT")"
+    mkdir -p "$AGENT_DIR/sessions/$SESSION_ID"
+fi
+
+exec codex "$@"

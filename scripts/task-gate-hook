@@ -1,0 +1,306 @@
+#!/bin/bash
+# task-gate-hook
+# PreToolUse hook — guards:
+#   0. Write — block creating new task.md files (only pb-tasks new CLI does that)
+#   1. Edit/Write on code files blocked when no task is active (exit 2 = BLOCK)
+#   2-mkdir. Bash — block manual task directory creation
+#
+# Allows: .agent/, .claude/ edits (task management, hook config)
+
+set -e
+
+# Skip when invoked from the monitor's own claude session (see launch-monitor).
+# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
+if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
+    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
+    exit 0
+fi
+
+# Source shared lib (same directory)
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/gate-echo-lib.sh"
+
+# is_code_file_path FILE_PATH
+# Returns 0 for source code paths that should require an active task.
+# Covers both extension-based code files and extensionless executable/script paths
+# that live in known code directories.
+is_code_file_path() {
+    local file_path="$1"
+    case "$file_path" in
+        *.py|*.ts|*.js|*.tsx|*.jsx|*.sh|*.bash|*.go|*.rs|*.rb|*.java|*.c|*.cpp|*.h|*.hpp|*.swift|*.kt|*.kts|*.dart|*.cs|*.php|*.r|*.R|*.m|*.mm|*.scala|*.zig|*.lua|*.ex|*.exs|*.ml|*.mli|*.tf|*.vue|*.svelte)
+            return 0
+            ;;
+        */.claude/bin/*|*/bin/*|*/src/hooks/*)
+            return 0
+            ;;
+        */scripts/*)
+            case "$file_path" in
+                *.md|*.txt|*.json|*.png|*.svg|*.css|*.html) return 1 ;;
+                *) return 0 ;;
+            esac
+            ;;
+    esac
+
+    # Existing extensionless script with shebang outside the common directories.
+    if [ -f "$file_path" ] && head -1 "$file_path" 2>/dev/null | grep -q '^#!'; then
+        return 0
+    fi
+
+    return 1
+}
+
+# Permanent protection for the installed Playbook runtime. This covers native
+# structured Edit/Write events. Arbitrary Bash commands are protected by
+# pb-sandbox's filesystem policy; this hook deliberately does not pretend to be
+# a complete shell parser.
+is_runtime_path() {
+    local file_path="$1"
+    local runtime_root="${PLAYBOOK_RUNTIME_ROOT:-$(cd "$HOOK_DIR/.." && pwd)}"
+    if [ "$(cd "$PROJECT_DIR" && pwd)" = "$runtime_root" ]; then
+        return 1
+    fi
+    python3 - "$runtime_root" "$file_path" <<'PY'
+import os
+import sys
+
+root = os.path.realpath(sys.argv[1])
+path = os.path.realpath(sys.argv[2])
+try:
+    inside = os.path.commonpath((root, path)) == root
+except ValueError:
+    inside = False
+raise SystemExit(0 if inside else 1)
+PY
+}
+
+# Find project root
+PROJECT_DIR=$(find_project_root)
+if [ -z "$PROJECT_DIR" ]; then
+    cat > /dev/null
+    exit 0
+fi
+
+AGENT_DIR=$(resolve_agent_dir "$PROJECT_DIR")
+
+# State file lives in per-session subdirectory; "default" used when no session_id
+SESSION_DIR="$AGENT_DIR/sessions/default"
+STATE_FILE="$SESSION_DIR/current_state"
+CLAUDE_MD="$PROJECT_DIR/CLAUDE.md"
+
+# CLAUDE.md keyword check — warn if task system exists but CLAUDE.md doesn't mention it
+if [ -d "$AGENT_DIR/tasks" ] && [ -f "$CLAUDE_MD" ]; then
+    if ! grep -qE 'pb-tasks bootstrap|pb-tasks work' "$CLAUDE_MD" 2>/dev/null; then
+        cat >&2 <<'MSG'
+WARNING: CLAUDE.md doesn't mention the task system. Essential commands:
+  pb-tasks bootstrap          — load context
+  pb-tasks work <N>           — activate task
+  pb-tasks work done          — deactivate
+  pb-tasks new <type> <name>  — create task
+  pb-tasks list               — see all tasks
+MSG
+    fi
+fi
+
+# Read stdin (PreToolUse JSON)
+INPUT=$(cat)
+
+# Session ID: env var → ancestor-scan → pid-$PPID (see gate-echo-lib.sh::resolve_session_id)
+SESSION_ID="$(resolve_session_id)"
+TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_name',''))" 2>/dev/null || echo "")
+
+SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
+STATE_FILE="$SESSION_DIR/current_state"
+mkdir -p "$SESSION_DIR"
+
+# --- Eval mode: skip guards if pretool_guard=off (keep session injection in Guard 2) ---
+if [ -n "$PLAYBOOK_EVAL_CONFIG" ] && [ -f "$PLAYBOOK_EVAL_CONFIG" ]; then
+    EVAL_PRETOOL=$(python3 -c "import json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('pretool_guard','on'))" 2>/dev/null || echo "on")
+    if [ "$EVAL_PRETOOL" = "off" ]; then
+        # Skip all guards, jump straight to Guard 2 (Bash session injection)
+        if [ "$TOOL_NAME" = "Bash" ]; then
+            CMD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null || echo "")
+            if echo "$CMD" | grep -qE 'tasks\s+(work|status|bootstrap|freehand|retro|new)' && [ -n "$SESSION_ID" ]; then
+                UPDATED_CMD="export PLAYBOOK_SESSION_ID=$SESSION_ID; $CMD"
+                JSON_CMD=$(python3 -c "import json; print(json.dumps('$UPDATED_CMD'))" 2>/dev/null)
+                cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":${JSON_CMD}}}}
+EOF
+                exit 0
+            fi
+        fi
+        echo '{}'; exit 0
+    fi
+fi
+
+# --- Guard 0: Write — block creating new task.md files (only pb-tasks new CLI does that) ---
+if [ "$TOOL_NAME" = "Write" ]; then
+    FILE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")
+
+    # Check if it's a task.md in .agent/tasks/ that doesn't exist yet
+    if echo "$FILE_PATH" | grep -qE '\.agent(/[^/]+)?/tasks/[^/]+/task\.md$'; then
+        if [ ! -f "$FILE_PATH" ]; then
+            cat >&2 <<'MSG'
+BLOCKED: Only `pb-tasks new` creates task.md files.
+
+Don't create task files manually. The CLI enforces templates and numbering.
+
+Use:  pb-tasks new <type> <name>
+Types: feature, bugfix, refactor, explore, research, review, decision, test
+MSG
+            exit 2
+        fi
+    fi
+fi
+
+# --- Guard 0.5: Batch gate closure detection ---
+# Block agents from checking multiple gates in a single Edit/Write to task.md.
+# Must run BEFORE the .agent/* early-exit in Guard 1.
+if [ "$TOOL_NAME" = "Edit" ] || [ "$TOOL_NAME" = "Write" ]; then
+    # Extract file_path (reuse from Guard 0 for Write, extract for Edit)
+    if [ -z "$FILE_PATH" ]; then
+        FILE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")
+    fi
+
+    # Check if this targets the active task's task.md
+    if [ -f "$STATE_FILE" ] && echo "$FILE_PATH" | grep -qE '\.agent(/[^/]+)?/tasks/[^/]+/task\.md$'; then
+        ACTIVE_TASK=$(head -1 "$STATE_FILE" | tr -d '[:space:]')
+        if [ -n "$ACTIVE_TASK" ] && echo "$FILE_PATH" | grep -q "/${ACTIVE_TASK}-"; then
+            # Count checkbox delta
+            DELTA=0
+            if [ "$TOOL_NAME" = "Edit" ]; then
+                # Extract old_string, new_string, replace_all in one python3 call
+                COUNTS=$(echo "$INPUT" | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+ti = d.get('tool_input', {})
+old = ti.get('old_string', '')
+new = ti.get('new_string', '')
+replace_all = ti.get('replace_all', False)
+pat = r'^\s*- \[[xX]\]'
+old_x = len(re.findall(pat, old, re.MULTILINE))
+new_x = len(re.findall(pat, new, re.MULTILINE))
+delta = new_x - old_x
+# replace_all multiplies the delta by number of occurrences in file
+if replace_all and delta > 0:
+    try:
+        with open(ti.get('file_path', '')) as f:
+            occurrences = f.read().count(old)
+        delta = delta * max(occurrences, 1)
+    except Exception:
+        pass
+print(delta)
+" 2>/dev/null || echo "0")
+                DELTA=$COUNTS
+            elif [ "$TOOL_NAME" = "Write" ]; then
+                # Compare current file vs proposed content
+                CURRENT_X=0
+                if [ -f "$FILE_PATH" ]; then
+                    CURRENT_X=$(grep -cE '^[[:space:]]*- \[[xX]\]' "$FILE_PATH" 2>/dev/null) || CURRENT_X=0
+                fi
+                NEW_X=$(echo "$INPUT" | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+content = d.get('tool_input', {}).get('content', '')
+print(len(re.findall(r'^\s*- \[[xX]\]', content, re.MULTILINE)))
+" 2>/dev/null || echo "0")
+                DELTA=$((NEW_X - CURRENT_X))
+            fi
+
+            # Three-tier response
+            if [ "$DELTA" -ge 3 ] 2>/dev/null; then
+                cat >&2 <<MSG
+BLOCKED: You closed $DELTA gates in one write. Work gate by gate — each gate deserves its own work and annotation.
+MSG
+                exit 2
+            elif [ "$DELTA" -ge 2 ] 2>/dev/null; then
+                echo "You closed $DELTA gates in one write — work gate by gate." >&2
+            fi
+        fi
+    fi
+fi
+
+# --- Guard 1: Edit/Write — require active task for code files ---
+if [ "$TOOL_NAME" = "Edit" ] || [ "$TOOL_NAME" = "Write" ]; then
+    # Reuse FILE_PATH from Guard 0/0.5 if already set
+    if [ -z "$FILE_PATH" ]; then
+        FILE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")
+    fi
+
+    if [ -n "$FILE_PATH" ] && is_runtime_path "$FILE_PATH"; then
+        echo "BLOCKED: the installed Playbook runtime is read-only during agent work: $FILE_PATH" >&2
+        exit 2
+    fi
+
+    # Allow .agent/ and .claude/ edits (task management, hook config)
+    case "$FILE_PATH" in
+        */.agent/*|*/.claude/*) exit 0 ;;
+    esac
+
+    # Only block code files
+    if ! is_code_file_path "$FILE_PATH"; then
+        exit 0
+    fi
+
+    # Check for active task
+    if [ -f "$STATE_FILE" ]; then
+        TASK=$(head -1 "$STATE_FILE" | tr -d '[:space:]')
+        if [ -n "$TASK" ]; then
+            exit 0
+        fi
+    fi
+
+    # No active task — block code edit
+    cat >&2 <<'MSG'
+BLOCKED: No active task.
+
+Code edits require an active task so work is tracked and directed.
+
+Workflow:
+  1. pb-tasks new <type> <name>   — create task
+  2. pb-tasks work <N>            — activate immediately (don't wait)
+  3. ... do the work gate by gate ...
+  4. pb-tasks work done           — deactivate when finished
+
+To resume an existing task:  pb-tasks work <N>
+MSG
+    exit 2
+fi
+
+# --- Guard 2: Bash — inject session_id + block manual task dir creation ---
+if [ "$TOOL_NAME" = "Bash" ]; then
+    CMD=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('command',''))" 2>/dev/null || echo "")
+
+    # Inject PLAYBOOK_SESSION_ID into tasks CLI commands via updatedInput
+    if [ -n "$SESSION_ID" ] && echo "$CMD" | grep -qE '(^|[;&|] *)(([^ ]*/)?)tasks (work|status|bootstrap|freehand|retro|new)'; then
+        UPDATED_CMD="export PLAYBOOK_SESSION_ID=$SESSION_ID; $CMD"
+        JSON_CMD=$(echo "$UPDATED_CMD" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().rstrip()))" 2>/dev/null)
+        cat <<EOFX
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":${JSON_CMD}}}}
+EOFX
+        exit 0
+    fi
+
+    # Guard 3: judge session — block task management commands
+    if [ "$SESSION_ID" = "judge" ] && echo "$CMD" | grep -qE '(^|[;&|] *)(([^ ]*/)?)tasks (new|work)'; then
+        cat >&2 <<'MSG'
+BLOCKED: Judge session cannot create or activate tasks.
+
+The judge reviews plans — it doesn't manage tasks.
+MSG
+        exit 2
+    fi
+
+    if echo "$CMD" | grep -qE 'mkdir.*\.agent(/[^/]+)?/tasks/'; then
+        cat >&2 <<'MSG'
+BLOCKED: Don't create task directories manually.
+
+Use `pb-tasks new <type> <name>` to create tasks. The CLI enforces templates and numbering.
+
+Types: feature, bugfix, refactor, explore, research, review, decision, test
+MSG
+        exit 2
+    fi
+fi
+
+# Everything else — allow
+exit 0

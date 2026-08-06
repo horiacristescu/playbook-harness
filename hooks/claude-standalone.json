@@ -1,0 +1,22 @@
+{
+  "events": {
+    "SessionStart": [
+      {"script": "session-start-hook"}
+    ],
+    "PreToolUse": [
+      {"script": "task-gate-hook", "matcher": "Edit|Write|Bash"}
+    ],
+    "UserPromptSubmit": [
+      {"script": "chat-log-hook", "statusMessage": "Logging to chat_log.md"}
+    ],
+    "PostToolUse": [
+      {"script": "state-echo-hook", "matcher": ".*"}
+    ],
+    "Stop": [
+      {"script": "stop-hook"}
+    ],
+    "SessionEnd": [
+      {"script": "session-end-hook"}
+    ]
+  }
+}

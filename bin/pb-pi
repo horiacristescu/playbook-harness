@@ -1,0 +1,194 @@
+#!/bin/bash
+# pb-pi — launch pi (driving a local oMLX model) as a Playbook
+# main agent with gate enforcement.
+#
+# Usage: pb-pi [model] [pi-args...]
+#        pb-pi --help
+#
+# What this does, vs the bare `pi` CLI:
+#   1. Discovers the Playbook project root (legacy `.agent/tasks` or
+#      multi-user `.agent/<user>/tasks`) and the resolved agent state dir.
+#   2. Enforces a model allow-list (local oMLX models only) — rejects anything
+#      else with exit 2, so a huge/unintended model can't be launched. The
+#      allow-list is the set of model ids in the active models.json (single
+#      source of truth — no hardcoded list here).
+#   3. Isolates pi's config under `<agent-dir>/pi/{config,sessions}` so a pi
+#      session never picks up unrelated global/project pi settings.
+#   4. Loads the Playbook hook adapter (`pi -e playbook-pi-hook-adapter.ts`),
+#      which bridges pi lifecycle events to the existing bash hooks
+#      (PreToolUse gate-block, post-tool gate echo, prompt logging).
+#
+# Choosing the model (precedence, most specific first):
+#   1. positional arg:           pb-pi <model> [pi-args...]
+#   2. per-project default:       <agent-dir>/pi/model   (one line, the model id)
+#   3. global default (env):      export PLAYBOOK_PI_MODEL=<model>   (e.g. in ~/.zshrc)
+#   4. shipped fallback:          first model id in the active models.json
+#
+# Allowed models come from the active models.json:
+#   - per-project:  <agent-dir>/pi/config/models.json   (if present — edit to
+#                   customize the allow-list for one project; not clobbered)
+#   - shipped:      <hook-dir>/playbook-pi-omlx-models.json
+#
+# Hook scripts + the adapter live in the same dir as this wrapper once
+# installed (`$PLUGIN_DIR/scripts/`); in the dev repo they live in `scripts/`
+# while this wrapper is in `bin/`. We resolve HOOK_DIR by locating
+# `task-gate-hook` and export PLAYBOOK_HOOK_DIR so the adapter shells out to
+# the right scripts.
+#
+# Canonical user-facing entry point. See src/provider/adapters/pi.py
+# launch_interactive() for the programmatic equivalent.
+
+set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+
+# Resolve HOOK_DIR (dir containing the bash hooks + the adapter). Installed:
+# same dir as this wrapper. Dev: sibling ../scripts.
+if [ -f "$SCRIPT_DIR/task-gate-hook" ]; then
+  HOOK_DIR="$SCRIPT_DIR"
+elif [ -f "$SCRIPT_DIR/../scripts/task-gate-hook" ]; then
+  HOOK_DIR="$(cd "$SCRIPT_DIR/../scripts" && pwd -P)"
+else
+  echo "Error: cannot locate Playbook hook scripts (task-gate-hook) near $SCRIPT_DIR" >&2
+  exit 1
+fi
+
+# Reuse the canonical bash root + agent-dir resolution.
+# shellcheck source=/dev/null
+source "$HOOK_DIR/gate-echo-lib.sh"
+
+PROJECT_ROOT="$(find_project_root)"
+AGENT_DIR=""
+[ -n "$PROJECT_ROOT" ] && AGENT_DIR="$(resolve_agent_dir "$PROJECT_ROOT")"
+
+# Allow-list source: ALWAYS the shipped models.json (single global source of
+# truth), so newly-added models propagate to every project on release. The
+# per-project config copy below is just pi's provider config, refreshed each
+# launch — it does NOT gate the allow-list (per-project default is set instead
+# via `<agent-dir>/pi/model`).
+SHIPPED_MODELS_JSON="$HOOK_DIR/playbook-pi-omlx-models.json"
+MODELS_JSON="$SHIPPED_MODELS_JSON"
+
+# Derive the allow-list (model ids) from the active models.json — single source
+# of truth. python3 is always available (stdlib only). Use a read loop (not
+# `mapfile`) so this works on macOS's bash 3.2.
+ALLOWED_MODELS=()
+while IFS= read -r _mid; do
+  [ -n "$_mid" ] && ALLOWED_MODELS+=("$_mid")
+done < <(python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+for m in d.get("providers", {}).get("omlx", {}).get("models", []):
+    mid = m.get("id")
+    if mid:
+        print(mid)
+' "$MODELS_JSON")
+
+if [ "${#ALLOWED_MODELS[@]}" -eq 0 ]; then
+  echo "Error: no models found in $MODELS_JSON" >&2
+  exit 1
+fi
+
+# --help
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  cat <<EOF
+pb-pi — gated pi launcher (local oMLX models)
+
+Usage: pb-pi [model] [pi-args...]
+
+Model precedence (most specific first):
+  1. positional arg            pb-pi <model> ...
+  2. per-project default       $([ -n "$AGENT_DIR" ] && echo "$AGENT_DIR/pi/model" || echo "<agent-dir>/pi/model")
+  3. global default (env)      export PLAYBOOK_PI_MODEL=<model>
+  4. shipped fallback          first allowed model
+
+Switch the default:
+  per-project:  echo '<model>' > <agent-dir>/pi/model
+  global:       export PLAYBOOK_PI_MODEL=<model>   # e.g. in ~/.zshrc
+
+Allowed models (from $MODELS_JSON):
+$(printf '  - %s\n' "${ALLOWED_MODELS[@]}")
+EOF
+  exit 0
+fi
+
+# Default-model precedence: per-project file > global env > first allowed.
+DEFAULT_MODEL="${ALLOWED_MODELS[0]}"
+if [ -n "${PLAYBOOK_PI_MODEL:-}" ]; then
+  DEFAULT_MODEL="$PLAYBOOK_PI_MODEL"
+fi
+if [ -n "$AGENT_DIR" ] && [ -f "$AGENT_DIR/pi/model" ]; then
+  PROJECT_MODEL="$(tr -d '[:space:]' < "$AGENT_DIR/pi/model")"
+  [ -n "$PROJECT_MODEL" ] && DEFAULT_MODEL="$PROJECT_MODEL"
+fi
+
+# Positional model arg overrides everything (anything not starting with '-').
+MODEL="$DEFAULT_MODEL"
+if [ "${1:-}" != "" ] && [ "${1:-}" != "--" ] && [[ "${1:-}" != -* ]]; then
+  MODEL="$1"
+  shift
+fi
+if [ "${1:-}" = "--" ]; then
+  shift
+fi
+
+allowed=false
+for candidate in "${ALLOWED_MODELS[@]}"; do
+  [ "$MODEL" = "$candidate" ] && allowed=true && break
+done
+if [ "$allowed" != "true" ]; then
+  {
+    echo "Error: model '$MODEL' is not allowed for Playbook pi/oMLX."
+    echo "Allowed models (from $MODELS_JSON):"
+    printf '  - %s\n' "${ALLOWED_MODELS[@]}"
+    echo "Add one to playbook-pi-omlx-models.json (or the project models.json) to allow it."
+  } >&2
+  exit 2
+fi
+
+# Build pi's --models cycle list (Ctrl+P) from the allow-list: omlx/<id>,...
+MODELS_ARG=""
+for m in "${ALLOWED_MODELS[@]}"; do
+  MODELS_ARG="${MODELS_ARG:+$MODELS_ARG,}omlx/$m"
+done
+
+SESSION_ID="pid-$$"
+export PLAYBOOK_SESSION_ID="$SESSION_ID"
+export PLAYBOOK_PROVIDER="pi"
+export PLAYBOOK_HOOK_DIR="$HOOK_DIR"
+
+# oMLX server is driven directly (it is expected to be already serving on
+# 127.0.0.1:8000); no `omlx launch` needed. The local server requires an API
+# key. These keep pi pinned to the local endpoint with no telemetry.
+export OMLX_API_KEY="${OMLX_API_KEY:-oMLX!26}"
+export PI_OFFLINE="${PI_OFFLINE:-1}"
+export PI_TELEMETRY="${PI_TELEMETRY:-0}"
+
+if [ -n "$PROJECT_ROOT" ]; then
+  export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
+  PI_CONFIG_DIR="$AGENT_DIR/pi/config"
+  PI_SESSION_DIR="$AGENT_DIR/pi/sessions"
+  mkdir -p "$PI_CONFIG_DIR" "$PI_SESSION_DIR" "$AGENT_DIR/sessions/$SESSION_ID"
+  # Project init owns this copy so upgrades are reconciled safely. Preserve it
+  # on launch; fall back to the shipped config only for an older/uninitialized
+  # project. Pi ignores the Playbook ownership metadata at the JSON root.
+  if [ ! -f "$PI_CONFIG_DIR/models.json" ]; then
+    cp "$SHIPPED_MODELS_JSON" "$PI_CONFIG_DIR/models.json"
+  fi
+  export PI_CODING_AGENT_DIR="$PI_CONFIG_DIR"
+  export PI_CODING_AGENT_SESSION_DIR="$PI_SESSION_DIR"
+fi
+
+if ! command -v pi >/dev/null 2>&1; then
+  echo "Error: 'pi' not found on PATH" >&2
+  echo "Install: pi CLI (https://github.com/pi-os/pi)" >&2
+  exit 1
+fi
+
+exec pi \
+  -e "$HOOK_DIR/playbook-pi-hook-adapter.ts" \
+  --provider omlx \
+  --model "$MODEL" \
+  --models "$MODELS_ARG" \
+  "$@"

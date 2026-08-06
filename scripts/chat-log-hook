@@ -1,0 +1,198 @@
+#!/bin/bash
+# chat-log-hook
+# Hook for logging all user messages with project context
+#
+# Triggered on UserPromptSubmit - logs to:
+#   - <project>/.agent/chat_log.md (project-local only)
+#
+# Features:
+#   - Message IDs (M001, M002, ...) for traceability
+#   - Auto-migrates old format entries on first run
+#   - Uses flock for atomic counter updates
+
+set -e
+
+# Skip when invoked from the monitor's own claude session (see launch-monitor).
+# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
+if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
+    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
+    exit 0
+fi
+
+# Source shared lib (same directory)
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/gate-echo-lib.sh"
+
+# Find project root
+PROJECT_DIR=$(find_project_root)
+if [ -z "$PROJECT_DIR" ]; then
+    exit 0
+fi
+
+AGENT_DIR=$(resolve_agent_dir "$PROJECT_DIR")
+
+# Skip logging if .agent/ isn't writable (sandbox mode, non-playbook project)
+if ! agent_dir_writable "$PROJECT_DIR"; then
+    exit 0
+fi
+
+LOCAL_LOG="$AGENT_DIR/chat_log.md"
+COUNTER_FILE="$AGENT_DIR/chat_log_counter"
+
+# Create agent directory if it doesn't exist
+mkdir -p "$AGENT_DIR"
+
+# Get next message ID (flock for atomicity where available, plain fallback on macOS)
+get_next_id() {
+    local counter_file="$1"
+    if command -v flock &>/dev/null; then
+        (
+            flock -x 200
+            local n=$(cat "$counter_file" 2>/dev/null || echo 0)
+            echo $((n + 1)) > "$counter_file"
+            printf "M%03d" $((n + 1))
+        ) 200>"$counter_file.lock"
+    else
+        local n=$(cat "$counter_file" 2>/dev/null || echo 0)
+        echo $((n + 1)) > "$counter_file"
+        printf "M%03d" $((n + 1))
+    fi
+}
+
+# Migrate old format entries to new format with IDs
+# Old: **[2026-01-27 07:42:28 UTC]** `SANDBOX`
+# New: **[M001]** [2026-01-27 07:42:28 UTC] `HOST`
+migrate_if_needed() {
+    local log_file="$1"
+    local counter_file="$2"
+
+    # Skip if log doesn't exist or is empty
+    [ -f "$log_file" ] || return 0
+    [ -s "$log_file" ] || return 0
+
+    # Skip if already migrated (has [M###] format)
+    if grep -q '^\*\*\[M[0-9]\{3\}\]' "$log_file" 2>/dev/null; then
+        return 0
+    fi
+
+    # Skip if no old-format entries exist
+    if ! grep -q '^\*\*\[[0-9]\{4\}-' "$log_file" 2>/dev/null; then
+        return 0
+    fi
+
+    # Create temp file for migration
+    local temp_file="$log_file.new"
+    local backup_file="$log_file.bak"
+
+    # Count entries in original (number of --- separators)
+    local orig_count=$(grep -c '^---$' "$log_file" || echo 0)
+
+    # Transform: add [MNNN] prefix to each entry
+    local msg_num=0
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^\*\*\[[0-9]{4}-[0-9]{2}-[0-9]{2} ]]; then
+            # Old format timestamp line - add message ID
+            msg_num=$((msg_num + 1))
+            local msg_id=$(printf "M%03d" $msg_num)
+            # Transform **[timestamp]** to **[MXXX]** [timestamp]
+            line=$(echo "$line" | sed "s/^\*\*\[\([^]]*\)\]\*\*/\*\*[$msg_id]\*\* [\1]/")
+        fi
+        echo "$line"
+    done < "$log_file" > "$temp_file"
+
+    # Validate: entry count should match
+    local new_count=$(grep -c '^---$' "$temp_file" || echo 0)
+    if [ "$orig_count" != "$new_count" ]; then
+        rm -f "$temp_file"
+        echo "Migration validation failed: entry count mismatch ($orig_count vs $new_count)" >&2
+        return 1
+    fi
+
+    # Atomic swap with backup
+    cp "$log_file" "$backup_file"
+    mv "$temp_file" "$log_file"
+
+    # Update counter
+    echo "$msg_num" > "$counter_file"
+}
+
+# Get timestamp in ISO 8601 format
+TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+# Read input from stdin
+INPUT=$(cat)
+
+# Try to extract prompt from JSON, fallback to raw input if not JSON
+if command -v jq &> /dev/null; then
+    USER_MESSAGE=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)
+    if [ -z "$USER_MESSAGE" ]; then
+        USER_MESSAGE="$INPUT"
+    fi
+else
+    # Fallback: try simple grep extraction if jq not available
+    USER_MESSAGE=$(echo "$INPUT" | grep -o '"prompt":"[^"]*"' | sed 's/"prompt":"//' | sed 's/"$//' 2>/dev/null)
+    if [ -z "$USER_MESSAGE" ]; then
+        USER_MESSAGE="$INPUT"
+    fi
+fi
+
+# Filter out IDE notification tags (noise from VSCode integration)
+# Flatten multiline to single line first
+USER_MESSAGE=$(echo "$USER_MESSAGE" | tr '\n' ' ' | sed 's/  */ /g')
+
+# Filter IDE tags using non-greedy pattern [^<]* to avoid over-matching
+USER_MESSAGE=$(echo "$USER_MESSAGE" | sed 's/<ide_opened_file>[^<]*<\/ide_opened_file>//g; s/<ide_selection>[^<]*<\/ide_selection>//g')
+
+# Trim whitespace
+USER_MESSAGE=$(echo "$USER_MESSAGE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+
+# Truncate long messages (e.g., pasted logs) to prevent log pollution
+MAX_LEN=500
+if [ ${#USER_MESSAGE} -gt $MAX_LEN ]; then
+    REMOVED=$((${#USER_MESSAGE} - MAX_LEN))
+    USER_MESSAGE="${USER_MESSAGE:0:$MAX_LEN}...[${REMOVED} chars removed]"
+fi
+
+# Skip logging if message is empty after filtering
+if [ -z "$USER_MESSAGE" ]; then
+    exit 0
+fi
+
+# Initialize local chat log with header if it doesn't exist
+if [ ! -f "$LOCAL_LOG" ]; then
+    echo "# Project Chat Log" > "$LOCAL_LOG"
+    echo "" >> "$LOCAL_LOG"
+    echo "User messages logged with timestamps." >> "$LOCAL_LOG"
+    echo "" >> "$LOCAL_LOG"
+fi
+
+# Migrate old format if needed (runs once, idempotent)
+migrate_if_needed "$LOCAL_LOG" "$COUNTER_FILE"
+
+# Dedup guard: skip if last entry has same timestamp and content
+LAST_TS=$(tail -10 "$LOCAL_LOG" 2>/dev/null | grep -o '\[[0-9-]* [0-9:]* UTC\]' | tail -1)
+LAST_MSG=$(tail -3 "$LOCAL_LOG" 2>/dev/null | grep -v '^$' | grep -v '^\*\*\[' | grep -v '^---' | tail -1)
+if [ "[$TIMESTAMP]" = "$LAST_TS" ] && [ "$USER_MESSAGE" = "$LAST_MSG" ]; then
+    exit 0
+fi
+
+# Get next message ID
+MSG_ID=$(get_next_id "$COUNTER_FILE")
+
+# Session ID (needed for PID tag in chat log and counter reset)
+SESSION_ID="$(resolve_session_id)"
+SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
+PROVIDER="${PLAYBOOK_PROVIDER:-claude}"
+
+# Append to local chat log with message ID and PID tag
+echo "---" >> "$LOCAL_LOG"
+echo "" >> "$LOCAL_LOG"
+echo "**[$MSG_ID]** [$TIMESTAMP] \`HOST\` ($PROVIDER/$SESSION_ID)" >> "$LOCAL_LOG"
+echo "" >> "$LOCAL_LOG"
+echo "$USER_MESSAGE" >> "$LOCAL_LOG"
+echo "" >> "$LOCAL_LOG"
+
+# Reset tool/write counters for this session (new user prompt = fresh count)
+mkdir -p "$SESSION_DIR"
+reset_counters "$SESSION_DIR/counters"

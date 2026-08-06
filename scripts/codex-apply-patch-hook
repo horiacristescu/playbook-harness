@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+
+
+"""Codex apply_patch hook: PreToolUse deny + PostToolUse gate echo.
+
+PreToolUse: refuse code edits when no task is active (Claude-policy parity via
+  `apply_patch_pre_decision`). Deny channel is `exit 2 + stderr` per W0(e) —
+  Codex wraps the stderr text into the model's tool_call_output as
+  "Command blocked by PreToolUse hook: <reason>. Command: <patch>".
+
+PostToolUse: emit `additionalContext` with the first-unchecked-gate text
+  (mirror of `state-echo-hook`, scoped per W3 — see task 123 / parked items).
+
+Fail-open: any internal error → exit 0 with no output. A parser bug must not
+  brick Codex.
+
+Sentinel for V1/V2 probes: when env var
+  `PLAYBOOK_HOOK_FIRED_SENTINEL=<path>` is set, write a marker file so live
+  probes can verify the hook actually executed (silent no-fire = false pass).
+"""
+
+from __future__ import annotations
+
+# Skip when invoked from the monitor's own claude session.
+import os as _os
+import sys as _sys
+if _os.environ.get("PLAYBOOK_ROLE") == "monitor":
+    print(f"[{__file__.rsplit('/', 1)[-1]}] skip (PLAYBOOK_ROLE=monitor)", file=_sys.stderr)
+    _sys.exit(0)
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def _bootstrap_imports() -> None:
+    script_dir = Path(__file__).resolve().parent
+    candidates = [script_dir.parent / "src"]
+    for candidate in candidates:
+        if candidate.exists():
+            sys.path.insert(0, str(candidate))
+            return
+
+
+def _find_project_root() -> Path:
+    env_root = os.environ.get("PLAYBOOK_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root)
+    from provider.codex_hooks import find_project_root
+    return find_project_root(Path.cwd())
+
+
+def _write_sentinel(event: str) -> None:
+    sentinel_path = os.environ.get("PLAYBOOK_HOOK_FIRED_SENTINEL")
+    if not sentinel_path:
+        return
+    try:
+        # Append "<event>\n" so multiple fires (Pre + Post) all show up.
+        with open(sentinel_path, "a", encoding="utf-8") as fh:
+            fh.write(f"{event}\n")
+    except OSError:
+        pass
+
+
+def main() -> int:
+    # Read stdin first so we know which event we're handling — that decides
+    # whether an exception below should fail-closed (PreToolUse) or fail-open.
+    raw_payload = ""
+    event = ""
+    try:
+        raw_payload = sys.stdin.read()
+        payload = json.loads(raw_payload) if raw_payload else {}
+        event = payload.get("hook_event_name") or ""
+    except Exception:
+        # Couldn't read or parse stdin — we don't know the event. Fail-open
+        # because we can't tell if blocking is appropriate, and bricking every
+        # tool call on a parser glitch is worse than a silent allow.
+        return 0
+
+    _write_sentinel(event or "unknown")
+
+    try:
+        _bootstrap_imports()
+        from provider.codex_hooks import (
+            apply_patch_post_context,
+            apply_patch_pre_decision,
+            resolve_session_id,
+        )
+        project_root = _find_project_root()
+        session_id = resolve_session_id()
+
+        if event == "PreToolUse":
+            decision = apply_patch_pre_decision(payload, project_root, session_id)
+            if decision is None:
+                return 0  # allow
+            # W0(e) decision: exit 2 + stderr is the model-visible channel.
+            print(decision.get("reason", "blocked by Playbook"), file=sys.stderr)
+            return 2
+
+        if event == "PostToolUse":
+            result = apply_patch_post_context(payload, project_root, session_id)
+            sys.stdout.write(json.dumps(result))
+            return 0
+
+        # Unknown event — fail-open.
+        return 0
+
+    except Exception as exc:
+        # Failure policy diverges by event (impl-review finding #1):
+        # - PreToolUse: FAIL-CLOSED. Intent guarantees deny-without-task; a
+        #   regression or import error must not silently let an edit through.
+        # - PostToolUse + unknown: fail-open. A bad gate echo is harmless.
+        msg = f"[codex-apply-patch-hook] internal error: {exc}"
+        if event == "PreToolUse":
+            print(f"{msg} (PreToolUse fail-closed)", file=sys.stderr)
+            return 2
+        print(msg, file=sys.stderr)
+        return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

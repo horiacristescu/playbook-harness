@@ -1,0 +1,96 @@
+#!/bin/bash
+# scripts/sandbox — launch a headless or interactive agent with write containment.
+#
+# Thin bash shim → delegates to src/provider/sandbox.py (single source of truth
+# for profile generation, agent dispatch, nesting guard, autodetect).
+#
+# Usage:
+#   scripts/sandbox [--agent NAME] [--rw PATH]... [--no-hooks] [-- agent-args...]
+#   scripts/sandbox --list-agents
+#   scripts/sandbox --print-profile [--agent NAME]
+#
+# Options:
+#   --agent NAME     Agent to launch: claude|codex|agy|pi (default: autodetect)
+#   --rw PATH        Add a read-write path (repeatable)
+#   --no-hooks       claude-only: disable all plugin hooks (clean isolated run)
+#   --list-agents    Print capability matrix and exit
+#   --print-profile  Print generated seatbelt profile and exit
+#   --               Everything after this is forwarded to the agent binary
+#
+# Examples:
+#   scripts/sandbox                                       # interactive claude (default)
+#   scripts/sandbox --agent codex -- exec "say hi"
+#   scripts/sandbox --agent agy -- --print "hi" --add-dir .
+#   scripts/sandbox --rw /tmp/data -- -p "do stuff"
+#   scripts/sandbox --list-agents
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+# Playbook runtime is stdlib-only — any python3 ≥ 3.10 works.
+# See CLAUDE.md "Runtime invariant" and memory project-stdlib-only-runtime.
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null \
+    || { echo "Playbook needs python3 >= 3.10 (found: $(python3 --version 2>&1))" >&2; exit 1; }
+
+# Find project root (where the provider/ module lives).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# scripts/sandbox lives at <root>/scripts; bin/sandbox is symlink to ../scripts/sandbox.
+# .claude/bin/sandbox lives at <root>/.claude/bin (when installed).
+case "$SCRIPT_DIR" in
+    */scripts) PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)" ;;
+    */bin)     PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)" ;;
+    */.claude/bin) PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd -P)" ;;
+    *)         PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)" ;;
+esac
+
+# Claude-specific shim: translate --no-hooks into claude's --safe-mode.
+# The old `--settings <empty {}>` shim only overrode one settings layer and
+# could NOT suppress plugin-registered hooks (our hooks register via the plugin
+# manifest, not settings) — ~60% of nested PDF mind-map runs leaked parent
+# hooks (T136). --safe-mode (claude 2.1.169) disables CLAUDE.md + plugins +
+# skills + hooks + MCP at the source, and is OAuth-compatible (unlike --bare).
+# Probed on 2.1.170: suppresses the plugin hooks with OAuth intact (T137 C1).
+NO_HOOKS=false
+FWD=()
+in_after_ddash=false
+while [ $# -gt 0 ]; do
+    if [ "$in_after_ddash" = true ]; then
+        FWD+=("$1"); shift; continue
+    fi
+    case "$1" in
+        --no-hooks) NO_HOOKS=true; shift ;;
+        --)         FWD+=("$1"); in_after_ddash=true; shift ;;
+        *)          FWD+=("$1"); shift ;;
+    esac
+done
+
+if [ "$NO_HOOKS" = true ]; then
+    # Inject --safe-mode AFTER the -- separator (claude top-level flag); if no
+    # separator was given, append one and the flag at the end.
+    new_fwd=()
+    injected=false
+    for arg in "${FWD[@]}"; do
+        new_fwd+=("$arg")
+        if [ "$arg" = "--" ] && [ "$injected" = false ]; then
+            new_fwd+=(--safe-mode)
+            injected=true
+        fi
+    done
+    if [ "$injected" = false ]; then
+        new_fwd+=(-- --safe-mode)
+    fi
+    FWD=("${new_fwd[@]}")
+fi
+
+# Canonical standalone/dev layout is <runtime>/src/provider.  Keep the flat
+# plugin layout only as a bounded legacy fallback during the cutover.
+if [ -d "$PROJECT_ROOT/src/provider" ]; then
+    PLAYBOOK_PYPATH="$PROJECT_ROOT/src"
+elif [ -d "$PROJECT_ROOT/provider" ]; then
+    PLAYBOOK_PYPATH="$PROJECT_ROOT"
+else
+    echo "Error: provider module not found at $PROJECT_ROOT (tried 'src/provider/' and legacy 'provider/')" >&2
+    exit 1
+fi
+
+PYTHONPATH="${PLAYBOOK_PYPATH}${PYTHONPATH:+:${PYTHONPATH}}" exec python3 -m provider.sandbox "${FWD[@]}"

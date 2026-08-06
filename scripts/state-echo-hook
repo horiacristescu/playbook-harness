@@ -1,0 +1,348 @@
+#!/bin/bash
+# state-echo-hook
+# PostToolUse hook — shows the current gate from task.md.
+#
+# Reads the active task's task.md, finds first unchecked gate (- [ ]),
+# echoes it with file:line so the agent can follow or edit.
+
+set -e
+
+# Skip when invoked from the monitor's own claude session (see launch-monitor).
+# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
+if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
+    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
+    exit 0
+fi
+
+# Tool-type-aware micro-reflection nudges — 5 classes, each naming a specific failure mode.
+# Call 1 on a new gate = silent. Call 2+ = class-specific nudge. Operate = always silent.
+NUDGES_ORIENT=(
+    "What am I looking for?"
+    "Do I already know enough to act?"
+    "Does this connect to the gate?"
+    "Am I browsing or searching?"
+    "What will I do with this information?"
+)
+NUDGES_EXECUTE=(
+    "Is this the simplest change that works?"
+    "How will I verify this?"
+    "Does this serve the Intent or my own idea?"
+    "Did I just introduce a problem?"
+    "Would the user recognize this as what they asked for?"
+)
+NUDGES_TEST=(
+    "Did I read the output or skim it?"
+    "Did it pass for the right reason?"
+    "What would a failure here look like?"
+    "Am I testing what the Intent says, or what's easy to test?"
+    "Is this gate done?"
+)
+NUDGES_REFLECT=(
+    "If that was a bare checkmark, go back and append what happened."
+    "Re-read what you just wrote — does it match what you did?"
+    "Closing to move on? Or because it's actually done?"
+    "Would a new agent understand this gate from what you wrote?"
+    "If the next gate feels wrong, replan now — not after starting it."
+)
+
+# classify_tool TOOL_NAME INPUT_JSON
+# Returns: orient, execute, test, operate, or reflect
+classify_tool() {
+    local tool="$1" input="$2"
+    case "$tool" in
+        Edit|Write|NotebookEdit)
+            # Reflect: editing task.md in .agent/tasks/
+            local fpath
+            fpath=$(echo "$input" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")
+            if echo "$fpath" | grep -qE '\.agent(/[^/]+)?/tasks/.*/task\.md'; then
+                echo "reflect"
+            else
+                echo "execute"
+            fi
+            ;;
+        Bash)
+            local cmd
+            cmd=$(echo "$input" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tool_input',{}).get('command',''))" 2>/dev/null || echo "")
+            if echo "$cmd" | grep -qE 'pytest|python.*-m\s+pytest|test_|grep\s+-c|assert'; then
+                echo "test"
+            else
+                echo "operate"
+            fi
+            ;;
+        Read|Grep|Glob|WebSearch|WebFetch|ToolSearch)
+            echo "orient"
+            ;;
+        *)
+            echo "operate"
+            ;;
+    esac
+}
+
+# Source shared lib (same directory)
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+source "$HOOK_DIR/gate-echo-lib.sh"
+
+# Find project root — only matches .agent/tasks/ (playbook projects)
+PROJECT_DIR=$(find_project_root)
+if [ -z "$PROJECT_DIR" ]; then
+    echo '{}'
+    exit 0
+fi
+
+AGENT_DIR=$(resolve_agent_dir "$PROJECT_DIR")
+
+# Check writability for gate echo counter and transition logging
+AGENT_WRITABLE=true
+if ! agent_dir_writable "$PROJECT_DIR"; then
+    AGENT_WRITABLE=false
+fi
+
+# Read stdin (PostToolUse JSON)
+INPUT=$(cat)
+SESSION_ID="$(resolve_session_id)"
+TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tool_name',''))" 2>/dev/null || echo "")
+
+# --- Eval mode: read config flags if PLAYBOOK_EVAL_CONFIG is set ---
+EVAL_GATE_ECHO="on"
+EVAL_NUDGES="typed"
+if [ -n "$PLAYBOOK_EVAL_CONFIG" ] && [ -f "$PLAYBOOK_EVAL_CONFIG" ]; then
+    EVAL_GATE_ECHO=$(python3 -c "import sys,json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('gate_echo','on'))" 2>/dev/null || echo "on")
+    EVAL_NUDGES=$(python3 -c "import sys,json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('nudges','typed'))" 2>/dev/null || echo "typed")
+    echo "⚠ EVAL MODE: gate_echo=${EVAL_GATE_ECHO}, nudges=${EVAL_NUDGES}" >&2
+    # Write file-based marker for harness verification (stream-json doesn't capture hook output)
+    echo "gate_echo=${EVAL_GATE_ECHO},nudges=${EVAL_NUDGES}" > "$AGENT_DIR/eval-marker" 2>/dev/null || true
+fi
+
+SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
+mkdir -p "$SESSION_DIR"
+STATE_FILE="$SESSION_DIR/current_state"
+COUNTER_FILE="$SESSION_DIR/counters"
+
+# Increment tool/write counters
+if [ "$AGENT_WRITABLE" = true ]; then
+    TOOLS_VAL=$(read_counter "$COUNTER_FILE" tools)
+    write_counter "$COUNTER_FILE" tools $(( ${TOOLS_VAL:-0} + 1 ))
+    case "$TOOL_NAME" in
+        Edit|Write|Bash)
+            WRITES_VAL=$(read_counter "$COUNTER_FILE" writes)
+            write_counter "$COUNTER_FILE" writes $(( ${WRITES_VAL:-0} + 1 ))
+            ;;
+    esac
+    # Write log: persist file content after Write/Edit
+    case "$TOOL_NAME" in
+        Edit|Write)
+            write_log_append "$INPUT" "$PROJECT_DIR"
+            ;;
+    esac
+fi
+
+# Read task number
+if [ ! -f "$STATE_FILE" ]; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"# No active task (pb-tasks work <N> to activate)"}}'
+    exit 0
+fi
+
+TASK=$(head -1 "$STATE_FILE" | tr -d '[:space:]')
+
+if [ -z "$TASK" ]; then
+    echo '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"# No active task (pb-tasks work <N> to activate)"}}'
+    exit 0
+fi
+
+# Find task file matching the task number
+TASK_FILE=$(find "$AGENT_DIR/tasks" -maxdepth 2 -name "task.md" -path "*/${TASK}-*/*" 2>/dev/null | head -1)
+
+if [ -z "$TASK_FILE" ]; then
+    CONTEXT="# [${TASK}] — task file not found"
+    JSON_CONTEXT=$(python3 -c "import json; print(json.dumps('$CONTEXT'))" 2>/dev/null || echo "\"$CONTEXT\"")
+    echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":${JSON_CONTEXT}}}"
+    exit 0
+fi
+
+# Count total and done checkboxes (only [ ], [x], [X] — not [8] reference links)
+TOTAL_GATES=$(grep -cE '^[[:space:]]*- \[( |x|X)\]' "$TASK_FILE" 2>/dev/null) || TOTAL_GATES=0
+DONE_GATES=$(grep -cE '^[[:space:]]*- \[[xX]\]' "$TASK_FILE" 2>/dev/null) || DONE_GATES=0
+
+# Find first unchecked gate (only at line start)
+GATE_LINE=""
+GATE_TEXT=""
+
+while IFS= read -r line; do
+    LINENO_PART="${line%%:*}"
+    CONTENT="${line#*:}"
+    GATE_LINE="$LINENO_PART"
+    GATE_TEXT=$(echo "$CONTENT" | sed 's/^[[:space:]]*- \[ \] *//' | cut -c 1-200)
+    break
+done < <(grep -nE '^[[:space:]]*- \[ \]' "$TASK_FILE" 2>/dev/null)
+
+# Freehand mode: suppress drift counter and gate pressure when the gate text
+# starts with "Freehand" — covers "Freehand", "Freehand — work is done",
+# "Freehand debrief — ...", and other discussion-style variants observed in
+# real task.md files. The single exception is "Freehand log" (the cleanup
+# gate inserted by `pb-tasks freehand` workflow at cli.py:1620), which must
+# remain a normal blocking gate so its work runs before close.
+# Pattern stays in lockstep with scripts/stop-hook and src/provider/codex_hooks.py.
+IS_FREEHAND=false
+# Match `Freehand log` followed by ANY non-word char (or end of string) — exact
+# Python regex `\b` semantics (impl-review F2/F5). Earlier 8-alternative list
+# enumerated only space/em-dash/en-dash/hyphen/colon/period/comma; `Freehand log!`
+# slipped past the bash exclusions but was caught by the Python `\b` matcher,
+# producing exact-divergence the lockstep was meant to prevent.
+case "$GATE_TEXT" in
+    "Freehand log"|"Freehand log"[!a-zA-Z0-9_]*)
+        : # cleanup gate — NOT freehand-mode
+        ;;
+    Freehand*)
+        IS_FREEHAND=true
+        ;;
+esac
+
+# Make path relative to project
+REL_PATH="${TASK_FILE#$PROJECT_DIR/}"
+
+# Repetition detection + gate transition logging (using consolidated counter file)
+GATE_LOG="$AGENT_DIR/chat_log.md"
+TRANSITION_MSG=""
+SKIP_MSG=""
+if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" = true ]; then
+    # Freehand mode: no counter increment, no repeat warning, no transition logging
+    NEW_COUNT=0
+    GATE_KEY="${TASK}:${GATE_LINE}"
+    if [ "$AGENT_WRITABLE" = true ]; then
+        write_counter "$COUNTER_FILE" gate_key "$GATE_KEY"
+        write_counter "$COUNTER_FILE" gate_count "0"
+        write_counter "$COUNTER_FILE" gate_text "$GATE_TEXT"
+    fi
+elif [ -n "$GATE_LINE" ]; then
+    GATE_KEY="${TASK}:${GATE_LINE}"
+    PREV_KEY=$(read_counter "$COUNTER_FILE" gate_key)
+    PREV_COUNT=$(read_counter "$COUNTER_FILE" gate_count)
+    PREV_TEXT=$(read_counter "$COUNTER_FILE" gate_text)
+    if [ -n "$PREV_KEY" ] && [ "$PREV_KEY" = "$GATE_KEY" ]; then
+        NEW_COUNT=$((PREV_COUNT + 1))
+    elif [ -n "$PREV_KEY" ]; then
+        # Gate changed — log the completed gate
+        PREV_TASK="${PREV_KEY%%:*}"
+        PREV_LINE="${PREV_KEY##*:}"
+        TRANSITION_MSG="# ✓ previous gate done (${PREV_COUNT} tool calls)"
+        if [ "$AGENT_WRITABLE" = true ]; then
+            {
+                echo "---"
+                echo ""
+                echo "**[G${PREV_TASK}:${PREV_LINE}]** [$(date -u '+%Y-%m-%d %H:%M:%S UTC')] \`HOST\` (${PREV_COUNT} tool calls)"
+                echo ""
+                echo "- [x] ${PREV_TEXT}"
+                echo ""
+            } >> "$GATE_LOG"
+        fi
+        # Gate-skip detection: new first-unchecked is above the just-completed gate
+        if [ "$PREV_TASK" = "$TASK" ] && [ "$GATE_LINE" -lt "$PREV_LINE" ] 2>/dev/null; then
+            SKIP_MSG="
+# ⚠ Gate at line ${GATE_LINE} is still open above completed gate at line ${PREV_LINE} — reorder gates in task.md if working out of order."
+        fi
+        # Bare-checkmark detection: compare completed gate text with original
+        BARE_MSG=""
+        if [ -n "$TASK_FILE" ] && [ -n "$PREV_LINE" ]; then
+            COMPLETED_LINE=$(sed -n "${PREV_LINE}p" "$TASK_FILE" 2>/dev/null)
+            COMPLETED_TEXT=$(echo "$COMPLETED_LINE" | sed 's/^[[:space:]]*- \[[xX]\] *//')
+            if [ "$COMPLETED_TEXT" = "$PREV_TEXT" ]; then
+                BARE_MSG="
+# ⚠ Gate closed with bare checkmark — append your outcome. (line ${PREV_LINE})"
+            fi
+        fi
+        NEW_COUNT=1
+    else
+        NEW_COUNT=1
+    fi
+    if [ "$AGENT_WRITABLE" = true ]; then
+        write_counter "$COUNTER_FILE" gate_key "$GATE_KEY"
+        write_counter "$COUNTER_FILE" gate_count "$NEW_COUNT"
+        write_counter "$COUNTER_FILE" gate_text "$GATE_TEXT"
+    fi
+else
+    # All gates done — log final gate if exists, clean up gate_* counters
+    PREV_KEY=$(read_counter "$COUNTER_FILE" gate_key)
+    if [ -n "$PREV_KEY" ] && [ "$AGENT_WRITABLE" = true ]; then
+        PREV_COUNT=$(read_counter "$COUNTER_FILE" gate_count)
+        PREV_TEXT=$(read_counter "$COUNTER_FILE" gate_text)
+        PREV_TASK="${PREV_KEY%%:*}"
+        PREV_LINE="${PREV_KEY##*:}"
+        {
+            echo "---"
+            echo ""
+            echo "**[G${PREV_TASK}:${PREV_LINE}]** [$(date -u '+%Y-%m-%d %H:%M:%S UTC')] \`HOST\` (${PREV_COUNT} tool calls)"
+            echo ""
+            echo "- [x] ${PREV_TEXT}"
+            echo ""
+        } >> "$GATE_LOG"
+        # Clear gate_* fields (task complete), keep tools/writes
+        write_counter "$COUNTER_FILE" gate_key ""
+        write_counter "$COUNTER_FILE" gate_count ""
+        write_counter "$COUNTER_FILE" gate_text ""
+    fi
+fi
+
+# --- Build output (guarded by eval flags — state logic above always runs) ---
+# Eval verification marker — harness checks for this in claude-raw.jsonl
+if [ -n "$PLAYBOOK_EVAL_CONFIG" ]; then
+    EVAL_MARKER="# [eval:gate_echo=${EVAL_GATE_ECHO},nudges=${EVAL_NUDGES}]"
+fi
+if [ "$EVAL_GATE_ECHO" = "off" ]; then
+    CONTEXT="${EVAL_MARKER:-}"
+elif [ -n "$EVAL_MARKER" ]; then
+    # Eval mode with gate echo on — prepend marker to normal output
+    if [ "$IS_FREEHAND" = true ]; then
+        CONTEXT="${EVAL_MARKER}
+# [${TASK}] Freehand mode — wait for user instructions. Close only when user says done."
+    else
+        CONTEXT="${EVAL_MARKER}
+$(format_context "$TASK" "$DONE_GATES" "$TOTAL_GATES" "${GATE_TEXT}" "$GATE_LINE" "$REL_PATH")"
+    fi
+elif [ "$IS_FREEHAND" = true ]; then
+    CONTEXT="# [${TASK}] Freehand mode — wait for user instructions. Close only when user says done."
+else
+    CONTEXT=$(format_context "$TASK" "$DONE_GATES" "$TOTAL_GATES" "${GATE_TEXT}" "$GATE_LINE" "$REL_PATH")
+fi
+if [ -n "$TRANSITION_MSG" ]; then
+    CONTEXT="${TRANSITION_MSG}
+${CONTEXT}"
+fi
+if [ -n "$SKIP_MSG" ]; then
+    CONTEXT="${CONTEXT}${SKIP_MSG}"
+fi
+if [ -n "$BARE_MSG" ]; then
+    CONTEXT="${CONTEXT}${BARE_MSG}"
+fi
+# Tool-type-aware nudge — silent on first call, silent on operate, class-specific otherwise
+# Eval flags: off=no nudge, flat=old 19-item rotation, typed=current (default)
+if [ "$EVAL_NUDGES" = "off" ] || [ "$EVAL_GATE_ECHO" = "off" ]; then
+    : # no nudge
+elif [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" != true ] && [ "$NEW_COUNT" -gt 1 ]; then
+    TOOL_CLASS=$(classify_tool "$TOOL_NAME" "$INPUT")
+    case "$TOOL_CLASS" in
+        orient)
+            NUDGE_IDX=$(( (NEW_COUNT - 2) % ${#NUDGES_ORIENT[@]} ))
+            CONTEXT="${CONTEXT} — 💭 ${NUDGES_ORIENT[$NUDGE_IDX]}"
+            ;;
+        execute)
+            NUDGE_IDX=$(( (NEW_COUNT - 2) % ${#NUDGES_EXECUTE[@]} ))
+            CONTEXT="${CONTEXT} — 💭 ${NUDGES_EXECUTE[$NUDGE_IDX]}"
+            ;;
+        test)
+            NUDGE_IDX=$(( (NEW_COUNT - 2) % ${#NUDGES_TEST[@]} ))
+            CONTEXT="${CONTEXT} — 💭 ${NUDGES_TEST[$NUDGE_IDX]}"
+            ;;
+        reflect)
+            NUDGE_IDX=$(( (NEW_COUNT - 2) % ${#NUDGES_REFLECT[@]} ))
+            CONTEXT="${CONTEXT} — 💭 ${NUDGES_REFLECT[$NUDGE_IDX]}"
+            ;;
+        # operate: silent — no nudge
+    esac
+fi
+
+# Format as hook JSON
+JSON_CONTEXT=$(echo "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().rstrip()))" 2>/dev/null || echo "\"$CONTEXT\"")
+
+cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":${JSON_CONTEXT}}}
+EOF
