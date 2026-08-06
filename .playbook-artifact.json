@@ -105,7 +105,7 @@
     {
       "destination": "install.sh",
       "mode": "0755",
-      "sha256": "2527f9b50e4e00ce473031c71fa798c486f3c636782691320fa629792975a6e1",
+      "sha256": "ee5d732037254b3f58f89b5fe501c6c5b541309897d37e867757c6851412bf08",
       "source": "install.sh"
     },
     {

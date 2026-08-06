@@ -529,7 +529,9 @@ fi
 
 if [ -n "$SCRIPT_SOURCE" ]; then
   clean_git_tree "$SCRIPT_SOURCE" || die "local source checkout is dirty: $SCRIPT_SOURCE"
-  self_audit "$SCRIPT_SOURCE" || die "local source checkout failed its artifact audit: $SCRIPT_SOURCE"
+  # A caller's umask may make a clean Git worktree group-writable. Trust the
+  # committed object database here; the normalized staging clone below receives
+  # the exact manifest audit before it can become the installed runtime.
   source_branch=$(git -C "$SCRIPT_SOURCE" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
   [ "$source_branch" = "$REF" ] \
     || die "local source checkout must be on $REF (found ${source_branch:-detached})"
