@@ -16,6 +16,17 @@ links, explicit/custom destinations, and verification failures are refused
 without deleting source data. The separate legacy `~/.local/share/playbook`
 archive is not swept automatically.
 
+Release evidence before the final documentation-only rebuild:
+
+- development code commit: `1023a2d`;
+- audited public code commit: `1be2b584a45628ef640bd45ba6cca35aed659d04`;
+- public artifact manifest SHA-256:
+  `748fc8b780a205a5b89c072e5a9727513855f9597a4afec008a01c4c38c70550`;
+- full regression: 1017 passed, 2 skipped;
+- raw curl over empty and write-log-only default roots, verified Documents
+  archive, trusted-clone install, repeat, project init, and post-init Write-hook
+  non-recreation all passed in isolated macOS state.
+
 ## Post-cutover migration and lifecycle hardening — 2026-08-06
 
 Existing Marketplace-era projects now have an explicit low-change transition:
