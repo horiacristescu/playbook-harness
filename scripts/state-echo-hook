@@ -128,12 +128,6 @@ if [ "$AGENT_WRITABLE" = true ]; then
             write_counter "$COUNTER_FILE" writes $(( ${WRITES_VAL:-0} + 1 ))
             ;;
     esac
-    # Write log: persist file content after Write/Edit
-    case "$TOOL_NAME" in
-        Edit|Write)
-            write_log_append "$INPUT" "$PROJECT_DIR"
-            ;;
-    esac
 fi
 
 # Read task number

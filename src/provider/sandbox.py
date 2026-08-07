@@ -398,12 +398,6 @@ def build_bwrap_argv(
     project_bind = "--bind" if project_writable else "--ro-bind"
     argv += [project_bind, project, project, "--bind", "/tmp", "/tmp"]
 
-    from .runtime_paths import user_data_dir
-
-    write_log_dir = user_data_dir(home=home) / "write-logs"
-    write_log_dir.mkdir(parents=True, exist_ok=True)
-    argv += ["--bind", str(write_log_dir), str(write_log_dir)]
-
     if git_dir:
         git_resolved = str(Path(git_dir).resolve())
         argv += ["--ro-bind", git_resolved, git_resolved]

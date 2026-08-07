@@ -17,7 +17,18 @@ umask 022
 
 PUBLIC_REPO="https://github.com/horiacristescu/playbook-harness.git"
 CANONICAL_REPO="$PUBLIC_REPO"
-INSTALL_DIR="${PLAYBOOK_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/playbook-harness}"
+case "${XDG_DATA_HOME:-}" in
+  /*) DEFAULT_DATA_HOME=$XDG_DATA_HOME ;;
+  *) DEFAULT_DATA_HOME="$HOME/.local/share" ;;
+esac
+DEFAULT_INSTALL_DIR="$DEFAULT_DATA_HOME/playbook-harness"
+INSTALL_DIR_OVERRIDDEN=false
+if [ -n "${PLAYBOOK_INSTALL_DIR:-}" ]; then
+  INSTALL_DIR=$PLAYBOOK_INSTALL_DIR
+  INSTALL_DIR_OVERRIDDEN=true
+else
+  INSTALL_DIR=$DEFAULT_INSTALL_DIR
+fi
 BIN_DIR="${PLAYBOOK_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
 REPO_URL="$CANONICAL_REPO"
 REF="main"
@@ -106,7 +117,7 @@ set_operation() {
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --install-dir) [ "$#" -ge 2 ] || die "--install-dir requires a directory"; INSTALL_DIR=$2; shift 2 ;;
+    --install-dir) [ "$#" -ge 2 ] || die "--install-dir requires a directory"; INSTALL_DIR=$2; INSTALL_DIR_OVERRIDDEN=true; shift 2 ;;
     --bin-dir) [ "$#" -ge 2 ] || die "--bin-dir requires a directory"; BIN_DIR=$2; shift 2 ;;
     --repair-launchers) REPAIR_LAUNCHERS=true; shift ;;
     --upgrade) set_operation upgrade; shift ;;
@@ -145,7 +156,12 @@ RAW_BIN_DIR=$BIN_DIR
 reject_symlink_ancestry "$RAW_INSTALL_DIR" || die "install path has symlink ancestry: $RAW_INSTALL_DIR"
 reject_symlink_ancestry "$RAW_BIN_DIR" || die "command path has symlink ancestry: $RAW_BIN_DIR"
 INSTALL_DIR=$(canonical_path "$RAW_INSTALL_DIR")
+DEFAULT_INSTALL_DIR=$(canonical_path "$DEFAULT_INSTALL_DIR")
 BIN_DIR=$(canonical_path "$RAW_BIN_DIR")
+DEFAULT_INSTALL_AUTHORIZED=false
+if [ "$INSTALL_DIR_OVERRIDDEN" = false ] && [ "$INSTALL_DIR" = "$DEFAULT_INSTALL_DIR" ]; then
+  DEFAULT_INSTALL_AUTHORIZED=true
+fi
 SHIM_MARKER="${SHIM_MARKER_PREFIX}${INSTALL_DIR}"
 RECOVERY_DIR="${INSTALL_DIR}.recovery"
 DISCARD_DIR="${INSTALL_DIR}.discard"
@@ -197,6 +213,136 @@ remote_matches() {
 managed_install_identity() {
   [ -d "$1/.git" ] && [ -f "$1/.playbook-artifact.json" ] \
     && remote_matches "$1"
+}
+
+archive_retired_write_logs() {
+  root=$1
+  documents=$2
+  python3 - "$root" "$documents" <<'PY'
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import os
+import shutil
+import stat
+import sys
+import tarfile
+from pathlib import Path
+
+root = Path(sys.argv[1])
+documents = Path(sys.argv[2])
+
+
+def fail(message: str) -> None:
+    print(f"Error: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def snapshot(base: Path) -> dict[str, tuple[str, int, int, str]]:
+    records: dict[str, tuple[str, int, int, str]] = {}
+    for path in sorted((base, *base.rglob("*")), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root).as_posix()
+        info = path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if stat.S_ISLNK(info.st_mode):
+            fail(f"retired write-log tree contains a symlink: {path}")
+        if stat.S_ISDIR(info.st_mode):
+            records[relative] = ("dir", mode, 0, "")
+        elif stat.S_ISREG(info.st_mode):
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            records[relative] = ("file", mode, info.st_size, digest)
+        else:
+            fail(f"retired write-log tree contains an unsupported entry: {path}")
+    return records
+
+
+if root.is_symlink() or not root.is_dir():
+    fail(f"install destination is not a real directory: {root}")
+root_info = root.lstat()
+root_identity = (root_info.st_dev, root_info.st_ino)
+
+children = list(root.iterdir())
+if not children:
+    root.rmdir()
+    print(f"Reclaimed empty retired Playbook data directory: {root}")
+    raise SystemExit(0)
+
+if len(children) != 1 or children[0].name != "write-logs":
+    fail(f"install destination exists but is not an authenticated Playbook Harness checkout: {root}")
+
+logs = children[0]
+if logs.is_symlink() or not logs.is_dir():
+    fail(f"retired write-log path is not a real directory: {logs}")
+
+before = snapshot(logs)
+documents.mkdir(parents=True, exist_ok=True)
+stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+archive = documents / f"playbook-write-logs-{stamp}.tar.gz"
+suffix = 1
+while archive.exists() or archive.is_symlink():
+    archive = documents / f"playbook-write-logs-{stamp}-{suffix}.tar.gz"
+    suffix += 1
+temporary = documents / f".{archive.name}.tmp-{os.getpid()}"
+if temporary.exists() or temporary.is_symlink():
+    fail(f"archive staging path already exists: {temporary}")
+
+try:
+    with tarfile.open(temporary, "x:gz", dereference=False) as bundle:
+        bundle.add(logs, arcname="playbook-harness/write-logs", recursive=True)
+
+    archived: dict[str, tuple[str, int, int, str]] = {}
+    with tarfile.open(temporary, "r:gz") as bundle:
+        for member in bundle.getmembers():
+            prefix = "playbook-harness/"
+            if not member.name.startswith(prefix):
+                fail(f"archive contains an unexpected member: {member.name}")
+            relative = member.name[len(prefix):].rstrip("/")
+            if member.issym() or member.islnk():
+                fail(f"archive contains a link: {member.name}")
+            if member.isdir():
+                archived[relative] = ("dir", stat.S_IMODE(member.mode), 0, "")
+            elif member.isfile():
+                extracted = bundle.extractfile(member)
+                if extracted is None:
+                    fail(f"could not read archived member: {member.name}")
+                payload = extracted.read()
+                archived[relative] = (
+                    "file",
+                    stat.S_IMODE(member.mode),
+                    len(payload),
+                    hashlib.sha256(payload).hexdigest(),
+                )
+            else:
+                fail(f"archive contains an unsupported member: {member.name}")
+
+    if archived != before:
+        fail("retired write-log archive verification failed")
+    if snapshot(logs) != before:
+        fail("retired write-log tree changed during archive creation")
+
+    os.replace(temporary, archive)
+    quarantine = root.with_name(f"{root.name}.retired-{os.getpid()}")
+    if quarantine.exists() or quarantine.is_symlink():
+        fail(f"retired write-log cleanup path already exists: {quarantine}")
+    current_root = root.lstat()
+    if stat.S_ISLNK(current_root.st_mode) or (
+        current_root.st_dev,
+        current_root.st_ino,
+    ) != root_identity:
+        fail("install destination identity changed during archive creation")
+    os.rename(root, quarantine)
+    quarantined = quarantine.lstat()
+    if (quarantined.st_dev, quarantined.st_ino) != root_identity:
+        fail("retired write-log quarantine identity mismatch")
+    shutil.rmtree(quarantine)
+except BaseException:
+    if temporary.exists() and not temporary.is_symlink():
+        temporary.unlink()
+    raise
+
+print(f"Archived retired Playbook write logs to {archive}")
+PY
 }
 
 acquire_lock() {
@@ -414,7 +560,15 @@ report_agents_and_path() {
 
 recover_interrupted_reinstall
 
-if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
+RETIRED_DEFAULT_OBSTRUCTION=false
+if [ "$DEFAULT_INSTALL_AUTHORIZED" = true ] && [ "$OPERATION" = "install" ] \
+  && [ "$REPAIR_LAUNCHERS" = false ] && [ -d "$INSTALL_DIR" ] \
+  && [ ! -L "$INSTALL_DIR" ] && ! managed_install_identity "$INSTALL_DIR"; then
+  RETIRED_DEFAULT_OBSTRUCTION=true
+fi
+
+if { [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; } \
+  && [ "$RETIRED_DEFAULT_OBSTRUCTION" = false ]; then
   [ -d "$INSTALL_DIR" ] && [ ! -L "$INSTALL_DIR" ] \
     || die "install destination is not a real directory: $INSTALL_DIR"
   managed_install_identity "$INSTALL_DIR" \
@@ -560,6 +714,11 @@ else
   git clone --branch "$REF" "$CLONE_SOURCE" "$STAGING_DIR" >/dev/null 2>&1
 fi
 self_audit "$STAGING_DIR" || die "candidate checkout failed its installed-tree audit"
+if [ "$RETIRED_DEFAULT_OBSTRUCTION" = true ]; then
+  test_fail_at before_retired_archive
+  archive_retired_write_logs "$INSTALL_DIR" "$HOME/Documents"
+  test_fail_at after_retired_archive
+fi
 mv "$STAGING_DIR" "$INSTALL_DIR"
 STAGING_DIR=""
 

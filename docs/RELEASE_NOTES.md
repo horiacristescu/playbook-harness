@@ -1,5 +1,21 @@
 # Playbook Harness release notes
 
+## Retired partial write log — 2026-08-07
+
+The provider-dependent Write/Edit backup has been removed. It captured only
+Claude-shaped structured writes (including normalized Pi/OMP calls), missed
+Codex and shell writes, and its renamed data directory could occupy the default
+runtime checkout path. Hooks and Linux sandbox setup no longer create or bind
+that directory.
+
+On a plain fresh install, an empty obsolete default root is reclaimed. If that
+root contains only a real `write-logs/` tree, the installer creates a uniquely
+named `~/Documents/playbook-write-logs-<UTC>.tar.gz`, reopens it, verifies every
+regular-file byte and mode, then empties the retired root and installs. Siblings,
+links, explicit/custom destinations, and verification failures are refused
+without deleting source data. The separate legacy `~/.local/share/playbook`
+archive is not swept automatically.
+
 ## Post-cutover migration and lifecycle hardening — 2026-08-06
 
 Existing Marketplace-era projects now have an explicit low-change transition:

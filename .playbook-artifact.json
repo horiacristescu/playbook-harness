@@ -9,7 +9,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "e4441063c51d1c1e7a9d5381c6ed8108065b45cb0b4b537112e991663d207990",
+      "sha256": "a279f170ff65fc32d6443b339332b8cf5146461383561658d5a5997f9357d45d",
       "source": "README.md"
     },
     {
@@ -87,7 +87,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "9375961ddcce893614ef497696ad1177a1e54cc10974251877d5baea0819e397",
+      "sha256": "b4ecc984ee6c2fa0659fa150879c01318ab6f631800f8f35173a68397bcfac55",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -105,7 +105,7 @@
     {
       "destination": "install.sh",
       "mode": "0755",
-      "sha256": "8a2e5cb80a005f1b158590e8c347cfa9b7342a297eb8da35748a5ac5fab2ce78",
+      "sha256": "0a632e5bbc6b898f006ab62aade9068eac9791057154c9b980e2600a81ca8b45",
       "source": "install.sh"
     },
     {
@@ -141,7 +141,7 @@
     {
       "destination": "scripts/gate-echo-lib.sh",
       "mode": "0755",
-      "sha256": "87f07db2f6f8c2a3020b2e9a1e5ebdacc1b8edfb1f18c8d4a4c796ae4829c542",
+      "sha256": "698c1284f45957487502be5b6287d6ce6693dae0afd878a0065f840d6b60ab7e",
       "source": "scripts/gate-echo-lib.sh"
     },
     {
@@ -189,7 +189,7 @@
     {
       "destination": "scripts/state-echo-hook",
       "mode": "0755",
-      "sha256": "8020b6d08cd209303696cfd42c4f0bafc5c39476cd0640f2f1276986b850e136",
+      "sha256": "86300291148a5728af65ac23dead9d48026d11a7c5ada76fe84ed0a2afd2b9f7",
       "source": "scripts/state-echo-hook"
     },
     {
@@ -375,13 +375,13 @@
     {
       "destination": "src/provider/runtime_paths.py",
       "mode": "0644",
-      "sha256": "983dd16c4413153e1ae613d21fed6470fd8138920950e5a97459156bb17c5822",
+      "sha256": "463163c53d535f036bbb3cd2ed7ce63233f2a1eacc23ea507b6f0babce89d878",
       "source": "src/provider/runtime_paths.py"
     },
     {
       "destination": "src/provider/sandbox.py",
       "mode": "0644",
-      "sha256": "6444b7bc6d5a9f2fb62dd99404d1fd67e870ab6e88cf5bac9ee64c85c31d6f56",
+      "sha256": "af9586a848acca3afaec6a020fcfe08fd9a1053babe0d20a8009457d329cbef0",
       "source": "src/provider/sandbox.py"
     },
     {

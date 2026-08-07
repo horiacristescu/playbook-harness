@@ -219,42 +219,6 @@ format_context() {
     fi
 }
 
-# write_log_append INPUT_JSON PROJECT_DIR
-# Appends the written file's content to the persistent write log.
-# Called from PostToolUse for Write/Edit tools. Extracts file_path from
-# the tool input JSON, reads the file, appends with timestamp.
-# Log lives at ${XDG_DATA_HOME:-~/.local/share}/playbook-harness/write-logs/
-# <project-slug>/write_log — outside both the project and runtime checkout.
-# — outside the project tree so agent can't accidentally delete it.
-write_log_append() {
-    local input="$1" project_dir="$2"
-    local file_path
-    file_path=$(echo "$input" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")
-    if [ -z "$file_path" ] || [ ! -f "$file_path" ]; then
-        return 0
-    fi
-    # Project slug: absolute path with / replaced by -
-    local slug
-    slug=$(echo "$project_dir" | sed 's|^/||; s|/|-|g')
-    local data_home
-    case "${XDG_DATA_HOME:-}" in
-        /*) data_home="$XDG_DATA_HOME" ;;
-        *) data_home="$HOME/.local/share" ;;
-    esac
-    local log_dir="$data_home/playbook-harness/write-logs/$slug"
-    mkdir -p "$log_dir" 2>/dev/null || return 0
-    local log_file="$log_dir/write_log"
-    local ts
-    ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    local size
-    size=$(wc -c < "$file_path" 2>/dev/null | tr -d ' ')
-    {
-        printf '=== %s %s (%s bytes) ===\n' "$ts" "$file_path" "$size"
-        cat "$file_path"
-        printf '\n'
-    } >> "$log_file" 2>/dev/null || true
-}
-
 # create_wrapper PROJECT_DIR WRAPPER_NAME
 # Creates .claude/bin/<WRAPPER_NAME> as a wrapper pinned to this runtime's
 # canonical scripts/<WRAPPER_NAME> path.

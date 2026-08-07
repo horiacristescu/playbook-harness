@@ -110,12 +110,14 @@ session, sandbox, model, or extension behavior.
 ## Upgrade, repair, reinstall, uninstall
 
 ```bash
-RUNTIME="${PLAYBOOK_INSTALL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/playbook-harness}"
-bash "$RUNTIME/install.sh" --upgrade
-bash "$RUNTIME/install.sh" --repair-launchers
-bash "$RUNTIME/install.sh" --reinstall
-bash "$RUNTIME/install.sh" --uninstall
+bash ~/.local/share/playbook-harness/install.sh --upgrade
+bash ~/.local/share/playbook-harness/install.sh --repair-launchers
+bash ~/.local/share/playbook-harness/install.sh --reinstall
+bash ~/.local/share/playbook-harness/install.sh --uninstall
 ```
+
+Those commands show the default location. If you selected an XDG or explicit
+install directory, run that checkout's `install.sh` instead.
 
 - Normal reruns report the existing installation; they never upgrade silently.
 - Upgrade requires an authenticated, clean `main` checkout with upstream
@@ -178,6 +180,11 @@ global provider settings.
 ## Troubleshooting
 
 - **`pb-tasks` not found:** add `${XDG_BIN_HOME:-$HOME/.local/bin}` to `PATH`.
+- **Old write logs occupy the install path:** a plain fresh install recognizes
+  only an otherwise-empty default root or a sole real `write-logs/` tree. It
+  archives the latter to a verified, uniquely named
+  `~/Documents/playbook-write-logs-<UTC>.tar.gz`, empties the retired directory,
+  and then installs. Any sibling file or symlink is refused without deletion.
 - **Another command shadows `pb-*`:** place the managed bin directory earlier
   on `PATH`; the installer reports the resolved collision.
 - **Upgrade says dirty:** inspect `git status` in the installed checkout. Do not
