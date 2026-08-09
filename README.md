@@ -100,12 +100,30 @@ pb-tasks doctor                       # project/harness diagnostics
 pb-tasks runtime-audit                # verify installed artifact integrity
 pb-tasks runtime-info                 # authoritative runtime schema + Git commit
 pb-sandbox --prompt "..." --agent codex
+pb-tmux-agent start reviewer codex -- --help
 ```
 
 Provider launchers `pb-codex`, `pb-agy`, and `pb-pi` are namespaced to avoid
 colliding with system commands. Bare Claude, Codex, and root-launched OMP use
 their project-local integrations; use a wrapper only where it adds documented
 session, sandbox, model, or extension behavior.
+
+`pb-tmux-agent` is an optional persistent execution transport. It requires
+`tmux` on `PATH`, but project initialization creates no tmux state and does not
+change tmux configuration. Runs, logs, and results live under the XDG state
+directory rather than inside a project:
+
+```bash
+pb-tmux-agent start reviewer command -- python3 -u -c 'print(input())'
+pb-tmux-agent send reviewer "review this change"
+pb-tmux-agent tail reviewer 50
+pb-tmux-agent wait reviewer --timeout 30
+pb-tmux-agent stop reviewer
+```
+
+Use `--namespace` to isolate campaigns and `--json` for controllers. Run
+`pb-tmux-agent --help` for provider, working-directory, environment, and model
+options. Hostile descendant containment remains the job of `pb-sandbox`.
 
 ## Upgrade, repair, reinstall, uninstall
 

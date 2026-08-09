@@ -9,7 +9,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "a279f170ff65fc32d6443b339332b8cf5146461383561658d5a5997f9357d45d",
+      "sha256": "dd7fbd62c93dae9cfa8985bb8e9262dbc83cd195acd945d68b671d266d673ea3",
       "source": "README.md"
     },
     {
@@ -41,6 +41,12 @@
       "mode": "0755",
       "sha256": "ec48e1db92aff7d60635b49870e960aced882e2d12e545849ae106dfcb160e40",
       "source": "bin/tasks"
+    },
+    {
+      "destination": "bin/pb-tmux-agent",
+      "mode": "0755",
+      "sha256": "d615ddb4c302d871476e6913057e0115e88fa35b3ff5fe4c544d4cfcdef15a0c",
+      "source": "bin/tmux-agent"
     },
     {
       "destination": "commands/freehand.md",
@@ -87,7 +93,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "3de411cd8b7eebb345924a38d210bf48be253f9c1fc239782b6321393e23e8f3",
+      "sha256": "a6010a73a1d0bea5386c73b2ff5629510d94377236fce66d5640edfed3412d6a",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -105,7 +111,7 @@
     {
       "destination": "install.sh",
       "mode": "0755",
-      "sha256": "0a632e5bbc6b898f006ab62aade9068eac9791057154c9b980e2600a81ca8b45",
+      "sha256": "11f9fb3abac2468d9e87fcc6de43622d1a996d3ffaf2b1a54777ea50ad4bf412",
       "source": "install.sh"
     },
     {
@@ -453,7 +459,7 @@
     {
       "destination": "src/tasks/installed_audit.py",
       "mode": "0644",
-      "sha256": "3c0e450d41f96f8e6933723808eadc4fb089375b8100524b0207b4015fcfb0e2",
+      "sha256": "13b09bb4905d13bc18c5f22e8bae4b297e386dac370d2368cf60f12e3ccd789d",
       "source": "src/tasks/installed_audit.py"
     },
     {
@@ -515,6 +521,12 @@
       "mode": "0644",
       "sha256": "a3b697751ce6d98ac77341f459a08359898ff7928ab419123efa35a178ea1c8a",
       "source": "src/templates/task_lifecycle.png"
+    },
+    {
+      "destination": "src/tmux_agent.py",
+      "mode": "0644",
+      "sha256": "528d1f78ab0f878b498e8dd0d052ba44b751e4271bbee0d30ff5902408b7ce7f",
+      "source": "src/tmux_agent.py"
     }
   ],
   "schema": 1

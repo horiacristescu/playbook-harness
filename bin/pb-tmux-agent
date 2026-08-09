@@ -1,0 +1,16 @@
+#!/bin/bash
+# Thin launcher for the stdlib-only persistent tmux agent transport.
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null \
+    || { echo "Playbook needs python3 >= 3.10 (found: $(python3 --version 2>&1))" >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+RUNTIME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+if [ ! -f "$RUNTIME_ROOT/src/tmux_agent.py" ]; then
+    echo "Error: tmux agent module not found at $RUNTIME_ROOT/src/tmux_agent.py" >&2
+    exit 1
+fi
+
+PYTHONPATH="$RUNTIME_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m tmux_agent "$@"

@@ -1,5 +1,20 @@
 # Playbook Harness release notes
 
+## Persistent tmux agent transport — 2026-08-09
+
+This release adds optional `pb-tmux-agent` lifecycle commands for durable,
+provider-neutral agent execution. It supports owned namespaced starts, literal
+multiline sends, append-only logs, bounded tails, status/result/wait, and exact
+TERM-to-KILL cleanup. The runtime records atomic metadata and results outside
+projects under the XDG state directory. Project init remains file-only and
+does not install or configure tmux.
+
+`tmux` is an optional external prerequisite. Claude, Codex, Pi, OMP, and Agy
+resolution follows their existing launcher contracts; `command` accepts exact
+argv for generic controllers and tests. Fresh installs, upgrades, launcher
+repair, runtime audit, and uninstall now own `pb-tmux-agent` alongside the
+other Harness commands.
+
 ## Legacy evaluator retirement — 2026-08-09
 
 The old provider-specific evaluator has been retired before work begins on its
