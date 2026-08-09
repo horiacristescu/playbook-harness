@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "id": "nub-mechanics-authored",
+  "events": [
+    {
+      "id": "task",
+      "message": "Create the deterministic arena marker and acknowledge completion.",
+      "deliver_when": "start",
+      "after": null,
+      "acknowledge": "ACK arena-canary",
+      "timeout_seconds": 10,
+      "on_timeout": "fail",
+      "known_facts": [],
+      "allowed_adaptations": {},
+      "forbidden_disclosures": [
+        "historical Markdown implementation",
+        "judge rubric",
+        "opaque arm mapping"
+      ]
+    }
+  ]
+}

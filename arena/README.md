@@ -29,3 +29,53 @@ installs dependencies, accesses the network, starts tmux, or mutates source proj
 Schema 1 uses strict JSON (`case.json`, `checksums.json`) to preserve the Harness's
 Python-stdlib-only runtime. A caveated case can be byte-reproducible while explicitly
 declining to claim exact original-project provenance.
+
+## Interactive campaigns
+
+Freeze before execution:
+
+```bash
+pb-arena campaign freeze ./campaign.json --results /absolute/private/results
+```
+
+Run with explicit local Git sources and the Playbook runtime repository:
+
+```bash
+pb-arena campaign run ./campaign.json \
+  --results /absolute/private/results \
+  --source source-id=/absolute/source/repo \
+  --runtime-repo "$HOME/.local/share/playbook-harness"
+```
+
+The runner reconstructs a fresh workspace per frozen assignment, materializes one pinned
+runtime variant, launches only through `pb-tmux-agent`, follows literal script triggers,
+runs frozen checks after worker termination, gives independent command judges copied blind
+packets, and writes an immutable `ADOPT`, `REJECT`, or `RETEST` report. Results are
+append-only and caller-retained; an identity is never cleared for a rerun.
+
+The shipped network-free mechanics canary is:
+
+```bash
+pb-arena canary run nub-mechanics \
+  --results /absolute/private/results \
+  --source code-monorepo=/path/to/Code \
+  --runtime-repo "$HOME/.local/share/playbook-harness"
+```
+
+It uses the exact Nub start but an explicitly authored one-message script and two
+identical arms. Expected result: `RETEST`. It proves orchestration, not a Playbook effect
+or historical conversation replay.
+
+## Authority, privacy, and cost
+
+- Role packets prevent accidental/cooperative leakage; they are not an OS security
+  boundary against malicious commands running as the same account.
+- Tmux exposes transport state only. The controller never infers questions, quiescence,
+  correctness, or semantic completion from pane prose.
+- Campaign argv is executable authority supplied by the author. Inspect it before run.
+  Private temp directories, minimal environments, timeouts, and output bounds are
+  containment hygiene, not a command sandbox.
+- Real provider workers or judges may transmit project evidence and cost money. Nothing
+  discovers credentials or launches them implicitly; the shipped canary is local Python.
+- Token/currency cost remains explicit missingness until a trusted adapter supplies it.
+  Cited judge output remains evidence, not hidden truth.

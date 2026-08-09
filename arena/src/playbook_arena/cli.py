@@ -10,13 +10,19 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from .analyze import write_report
 from .case import ArenaCaseError, CaseDefinition, discover_cases
+from .campaign import execute_campaign, freeze_campaign
 from .git_source import parse_source_bindings
 from .prepare import PROVENANCE_FILE, prepare_case, tree_digest
 
 
 def default_cases_root() -> Path:
     return Path(__file__).resolve().parents[2] / "cases"
+
+
+def default_canaries_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "canaries"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,6 +44,29 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--source", action="append", default=[], metavar="ID=PATH")
         command.add_argument("--corpus")
         command.add_argument("--json", action="store_true")
+    campaign = domains.add_parser("campaign", help="frozen campaign operations")
+    campaign_commands = campaign.add_subparsers(dest="campaign_command", required=True)
+    for name in ("freeze", "run", "report"):
+        command = campaign_commands.add_parser(name, help=f"{name} a frozen campaign")
+        command.add_argument("campaign")
+        command.add_argument("--results", required=True, help="explicit append-only results root")
+        command.add_argument("--capability", action="append", default=[])
+        if name == "run":
+            command.add_argument("--source", action="append", default=[], metavar="ID=PATH")
+            command.add_argument("--runtime-repo", required=True)
+            command.add_argument("--corpus")
+        command.add_argument("--json", action="store_true")
+    canary = domains.add_parser("canary", help="shipped network-free mechanics canary")
+    canary_commands = canary.add_subparsers(dest="canary_command", required=True)
+    canary_list = canary_commands.add_parser("list", help="list shipped canaries")
+    canary_list.add_argument("--json", action="store_true")
+    canary_run = canary_commands.add_parser("run", help="run one shipped canary")
+    canary_run.add_argument("canary_id")
+    canary_run.add_argument("--results", required=True)
+    canary_run.add_argument("--source", action="append", default=[], metavar="ID=PATH")
+    canary_run.add_argument("--runtime-repo", required=True)
+    canary_run.add_argument("--corpus")
+    canary_run.add_argument("--json", action="store_true")
     return parser
 
 
@@ -128,21 +157,51 @@ def _emit(value: Any, *, as_json: bool) -> None:
 def main(arguments: list[str] | None = None) -> int:
     options = _parser().parse_args(arguments)
     as_json = bool(options.json)
-    if options.case_command == "list":
-        _emit([_summary(case) for case in _cases(options.cases_dir).values()], as_json=as_json)
+    if options.domain == "case":
+        if options.case_command == "list":
+            _emit([_summary(case) for case in _cases(options.cases_dir).values()], as_json=as_json)
+            return 0
+        case = _select(options.cases_dir, options.case_id)
+        sources = parse_source_bindings(options.source)
+        unknown_sources = sorted(set(sources) - {case.source.id})
+        if unknown_sources:
+            raise ArenaCaseError(f"source binding does not belong to case: {', '.join(unknown_sources)}")
+        corpus = None if options.corpus is None else Path(options.corpus).expanduser()
+        if options.case_command == "prepare":
+            value = prepare_case(case, options.destination, sources=sources, corpus=corpus)
+            result = {"case_id": case.id, "status": "prepared", **value}
+        else:
+            result = doctor_case(case, sources=sources, corpus=corpus)
+        _emit(result, as_json=as_json)
         return 0
-    case = _select(options.cases_dir, options.case_id)
-    sources = parse_source_bindings(options.source)
-    unknown_sources = sorted(set(sources) - {case.source.id})
-    if unknown_sources:
-        raise ArenaCaseError(f"source binding does not belong to case: {', '.join(unknown_sources)}")
-    corpus = None if options.corpus is None else Path(options.corpus).expanduser()
-    if options.case_command == "prepare":
-        value = prepare_case(case, options.destination, sources=sources, corpus=corpus)
-        result = {"case_id": case.id, "status": "prepared", **value}
+    if options.domain == "canary" and options.canary_command == "list":
+        values = sorted(path.parent.name for path in default_canaries_root().glob("*/campaign.json") if path.is_file() and not path.is_symlink())
+        print(json.dumps(values, indent=2) if as_json else "\n".join(values))
+        return 0
+    if options.domain == "canary":
+        campaign_path = default_canaries_root() / options.canary_id / "campaign.json"
+        if campaign_path.is_symlink() or not campaign_path.is_file():
+            raise ArenaCaseError(f"unknown canary: {options.canary_id}")
+        frozen = freeze_campaign(campaign_path, options.results)
+        result = execute_campaign(frozen, cases_root=options.cases_dir, sources=parse_source_bindings(options.source), runtime_repo=options.runtime_repo, corpus=None if options.corpus is None else Path(options.corpus).expanduser())
     else:
-        result = doctor_case(case, sources=sources, corpus=corpus)
-    _emit(result, as_json=as_json)
+        frozen = freeze_campaign(options.campaign, options.results, capabilities=options.capability)
+        if options.campaign_command == "freeze":
+            result = {"campaign_id": frozen.definition.id, "campaign_sha256": frozen.definition.sha256, "assignment_sha256": frozen.assignment_sha256, "runs": len(frozen.assignments), "root": str(frozen.root)}
+        elif options.campaign_command == "run":
+            result = execute_campaign(frozen, cases_root=options.cases_dir, sources=parse_source_bindings(options.source), runtime_repo=options.runtime_repo, corpus=None if options.corpus is None else Path(options.corpus).expanduser())
+        else:
+            report_path = frozen.root / "report.json"
+            if report_path.exists():
+                result = json.loads(report_path.read_text(encoding="utf-8"))
+            else:
+                _, _, result = write_report(frozen)
+    if as_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    elif "recommendation" in result:
+        print(f"{result.get('campaign_id', frozen.definition.id)}: {result['recommendation']} ({result.get('report', frozen.root / 'report.md')})")
+    else:
+        print(f"{result['campaign_id']}: frozen {result['assignment_sha256']}")
     return 0
 
 

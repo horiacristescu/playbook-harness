@@ -9,14 +9,44 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "b4f187927ef4a55790225fbed890d021726dba27bb7dc9cf6c7f80b5c33c2cf3",
+      "sha256": "127301276286bb4cf71a29d46380fbae8c8ffecb9bf105a18904ab033baf19a2",
       "source": "README.md"
     },
     {
       "destination": "arena/README.md",
       "mode": "0644",
-      "sha256": "d37798bf7f821a3ff53b46c1ecf10f4f1c6a4505d1cb8bff8e7e1515e1afaf0b",
+      "sha256": "1c6e97dcb886ef97ceddbbebe2144c0b967db67b6c2534bf9f7857b380d8bf97",
       "source": "arena/README.md"
+    },
+    {
+      "destination": "arena/canaries/nub-mechanics/campaign.json",
+      "mode": "0644",
+      "sha256": "166c46a15e87e761a5ab67ee22410787381977494dc6ada071153000e68fbca2",
+      "source": "arena/canaries/nub-mechanics/campaign.json"
+    },
+    {
+      "destination": "arena/canaries/nub-mechanics/control.json",
+      "mode": "0644",
+      "sha256": "dcf99c8d98716630730695e063bebbb47cd044397b15495b37a4471dd1c819f2",
+      "source": "arena/canaries/nub-mechanics/control.json"
+    },
+    {
+      "destination": "arena/canaries/nub-mechanics/noop.json",
+      "mode": "0644",
+      "sha256": "236979f81479b442b5fac8d4db296474dbe6495b918504a69824e26de5622248",
+      "source": "arena/canaries/nub-mechanics/noop.json"
+    },
+    {
+      "destination": "arena/canaries/nub-mechanics/rubric.json",
+      "mode": "0644",
+      "sha256": "8b61a4d3e4254b43296915cb40c13bdb15f5568c88bf76643b18561d5f4e5999",
+      "source": "arena/canaries/nub-mechanics/rubric.json"
+    },
+    {
+      "destination": "arena/canaries/nub-mechanics/script.json",
+      "mode": "0644",
+      "sha256": "cad382f6266f8d5081f454d0561c22b8704ed62f000d5030c53788a718c5a7a3",
+      "source": "arena/canaries/nub-mechanics/script.json"
     },
     {
       "destination": "arena/cases/nub-markdown-format/case.json",
@@ -61,6 +91,30 @@
       "source": "arena/src/playbook_arena/__init__.py"
     },
     {
+      "destination": "arena/src/playbook_arena/analyze.py",
+      "mode": "0644",
+      "sha256": "5476ab0a1ad422ab0f3966b68a84223b207aa58d7bac30e1773244609ecc419f",
+      "source": "arena/src/playbook_arena/analyze.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/campaign.py",
+      "mode": "0644",
+      "sha256": "89ba95c6c088cd66e36fa11713d792b9a985f6cabf57d71bfca9fdc740d5feec",
+      "source": "arena/src/playbook_arena/campaign.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/canary_judge.py",
+      "mode": "0644",
+      "sha256": "cf00913c875aa5b5dbe64c5b584d095c84b560b0e8a24421fec1c0ecf3ee0262",
+      "source": "arena/src/playbook_arena/canary_judge.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/canary_worker.py",
+      "mode": "0644",
+      "sha256": "269b9906ff06777630f8798152902d03d0c2aedfc232a12b4fef61fd8f68d5c6",
+      "source": "arena/src/playbook_arena/canary_worker.py"
+    },
+    {
       "destination": "arena/src/playbook_arena/case.py",
       "mode": "0644",
       "sha256": "e31e79b0e3ec22a7c956dc95dcebe31e197c318190207228aab55087fba08118",
@@ -69,8 +123,20 @@
     {
       "destination": "arena/src/playbook_arena/cli.py",
       "mode": "0644",
-      "sha256": "c4731fe54b73506d12413bc67ce0f142172110b0a4aafb44b6325c62cdd0e476",
+      "sha256": "dc000f4d557176ec43efe635b54cfa6dae1ccecdd6f14bc520ec8a75ed9a8c93",
       "source": "arena/src/playbook_arena/cli.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/controller.py",
+      "mode": "0644",
+      "sha256": "d88078ae82db8c10285b7adf4ed0f79dc4a6ebcbe82b687fc6ea1977b2805902",
+      "source": "arena/src/playbook_arena/controller.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/evidence.py",
+      "mode": "0644",
+      "sha256": "cfe4d02cf53fdd753e4fe2931a538991a52097ca14700b088e6750b4ad4a21ee",
+      "source": "arena/src/playbook_arena/evidence.py"
     },
     {
       "destination": "arena/src/playbook_arena/git_source.py",
@@ -79,10 +145,40 @@
       "source": "arena/src/playbook_arena/git_source.py"
     },
     {
+      "destination": "arena/src/playbook_arena/judge.py",
+      "mode": "0644",
+      "sha256": "488b38edba854dfbc63a934c2c668b3158842283ce8917aa82693ba07862535a",
+      "source": "arena/src/playbook_arena/judge.py"
+    },
+    {
       "destination": "arena/src/playbook_arena/prepare.py",
       "mode": "0644",
       "sha256": "31b08b14dacfe26ad3cb36b61356f6c30918a6160511b2bc2ae5645a1a35cc93",
       "source": "arena/src/playbook_arena/prepare.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/run.py",
+      "mode": "0644",
+      "sha256": "b21e6393ced38062d31ac39d2f05f30650330b91c9ed19f73ec37c7b953b5298",
+      "source": "arena/src/playbook_arena/run.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/schema.py",
+      "mode": "0644",
+      "sha256": "b69bb97f11b23ee982a377b46a3e4f3a7ba67e6c6006a41ce55377ae683896e7",
+      "source": "arena/src/playbook_arena/schema.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/store.py",
+      "mode": "0644",
+      "sha256": "b790d6ca2f82d440d0af75b205a4d00a446ba73a16ef7ae3b04a86ebfff85f28",
+      "source": "arena/src/playbook_arena/store.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/variant.py",
+      "mode": "0644",
+      "sha256": "7cf361a892b6cbd1dc17bb4f624e2fb21660adf3d1abed22d89c4439d238dc92",
+      "source": "arena/src/playbook_arena/variant.py"
     },
     {
       "destination": "bin/pb-agy",
@@ -171,7 +267,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "4753bb1a814976434772c7548e35aa19950dc3cd87f58fb4d3d65e4750cc3eb8",
+      "sha256": "b1057027c1ddde6ebd14fa138dc4334a2a08e2702c151ddd2dce0fc0df410944",
       "source": "docs/RELEASE_NOTES.md"
     },
     {

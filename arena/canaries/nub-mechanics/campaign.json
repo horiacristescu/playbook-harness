@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "id": "nub-mechanics",
+  "case_id": "nub-markdown-format",
+  "script": {
+    "path": "script.json",
+    "sha256": "cad382f6266f8d5081f454d0561c22b8704ed62f000d5030c53788a718c5a7a3"
+  },
+  "rubric": {
+    "path": "rubric.json",
+    "sha256": "8b61a4d3e4254b43296915cb40c13bdb15f5568c88bf76643b18561d5f4e5999"
+  },
+  "variants": [
+    {
+      "path": "control.json",
+      "sha256": "dcf99c8d98716630730695e063bebbb47cd044397b15495b37a4471dd1c819f2"
+    },
+    {
+      "path": "noop.json",
+      "sha256": "236979f81479b442b5fac8d4db296474dbe6495b918504a69824e26de5622248"
+    }
+  ],
+  "repetitions": 1,
+  "seed": 158,
+  "worker": {
+    "agent": "command",
+    "args": ["python3", "-m", "playbook_arena.canary_worker"],
+    "model": null,
+    "required_tools": ["git", "python3", "pb-tmux-agent", "tmux"],
+    "required_capabilities": []
+  },
+  "judges": [
+    {
+      "id": "fixture-judge",
+      "argv": ["python3", "-m", "playbook_arena.canary_judge"]
+    }
+  ],
+  "checks": [
+    {
+      "id": "marker",
+      "argv": [
+        "python3",
+        "-c",
+        "from pathlib import Path; import sys; p=Path('arena-canary.marker'); sys.exit(0 if p.read_text(encoding='utf-8') == 'created by deterministic fixture\\n' else 1)"
+      ],
+      "timeout_seconds": 5
+    }
+  ],
+  "limits": {
+    "wall_seconds": 60,
+    "max_interventions": 1,
+    "max_output_bytes": 65536,
+    "max_restarts": 0
+  },
+  "decision": {
+    "adopt_min_passes": 2,
+    "reject_min_failures": 2
+  }
+}

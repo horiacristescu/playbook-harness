@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "id": "noop-treatment",
+  "base_commit": "a74f5403a71f2d4a12b56127b9b960e646aec6dc",
+  "patch": null,
+  "patch_sha256": null,
+  "touched_paths": [],
+  "rationale": "An intentionally identical opaque arm; it cannot support a treatment-effect claim."
+}

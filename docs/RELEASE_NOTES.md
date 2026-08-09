@@ -1,5 +1,17 @@
 # Playbook Harness release notes
 
+## Interactive historical arena — 2026-08-09
+
+Added frozen script/rubric/variant/campaign schemas, balanced opaque assignment,
+hash-chained append-only evidence, literal controller barriers, exact tmux-owned cleanup,
+post-run deterministic checks, blind cited command judges, multidimensional analysis, and
+compact immutable `ADOPT`/`REJECT`/`RETEST` reports.
+
+The exact-Nub `nub-mechanics` canary uses an explicitly authored script and two identical
+local fixture arms, so its expected result is `RETEST`. It performs no model or network
+call. Arena role packets reduce accidental leakage but are not an OS security sandbox;
+real provider commands remain explicit and may carry privacy/cost implications.
+
 ## Portable historical cases — 2026-08-09
 
 This release adds `pb-arena case list|prepare|doctor` and two real historical recipes.

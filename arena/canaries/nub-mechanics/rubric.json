@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "id": "nub-mechanics",
+  "version": "v1",
+  "criteria": [
+    {
+      "id": "marker",
+      "kind": "deterministic",
+      "text": "The deterministic worker-created marker exists with the frozen content."
+    },
+    {
+      "id": "audit-trail",
+      "kind": "semantic",
+      "text": "The run retains mutually consistent controller, terminal, workspace, and check evidence."
+    }
+  ]
+}

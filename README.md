@@ -102,6 +102,7 @@ pb-tasks runtime-info                 # authoritative runtime schema + Git commi
 pb-sandbox --prompt "..." --agent codex
 pb-tmux-agent start reviewer codex -- --help
 pb-arena case list                     # inspect portable historical cases
+pb-arena canary list                   # inspect shipped network-free canaries
 ```
 
 Provider launchers `pb-codex`, `pb-agy`, and `pb-pi` are namespaced to avoid
@@ -131,6 +132,10 @@ touching live project worktrees. Cases bind logical source IDs explicitly, verif
 patches and prepared-tree hashes, reject named future leakage and credential shapes,
 and distinguish exact from caveated provenance. `case doctor` reconstructs twice and
 self-cleans; it does not run agents, tests, dependencies, tmux, or network operations.
+Frozen `campaign run` is a separate explicit authority: it executes declared commands
+through tmux, retains append-only evidence, and may carry provider privacy/cost when the
+campaign declares a real agent. The shipped `nub-mechanics` canary uses local fixtures
+only and is expected to return `RETEST`.
 See `arena/README.md` in the runtime for examples and ownership boundaries.
 
 ## Upgrade, repair, reinstall, uninstall
