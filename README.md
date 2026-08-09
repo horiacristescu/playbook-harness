@@ -101,6 +101,7 @@ pb-tasks runtime-audit                # verify installed artifact integrity
 pb-tasks runtime-info                 # authoritative runtime schema + Git commit
 pb-sandbox --prompt "..." --agent codex
 pb-tmux-agent start reviewer codex -- --help
+pb-arena case list                     # inspect portable historical cases
 ```
 
 Provider launchers `pb-codex`, `pb-agy`, and `pb-pi` are namespaced to avoid
@@ -124,6 +125,13 @@ pb-tmux-agent stop reviewer
 Use `--namespace` to isolate campaigns and `--json` for controllers. Run
 `pb-tmux-agent --help` for provider, working-directory, environment, and model
 options. Hostile descendant containment remains the job of `pb-sandbox`.
+
+`pb-arena` reconstructs Git-pinned historical project moments for evaluation without
+touching live project worktrees. Cases bind logical source IDs explicitly, verify
+patches and prepared-tree hashes, reject named future leakage and credential shapes,
+and distinguish exact from caveated provenance. `case doctor` reconstructs twice and
+self-cleans; it does not run agents, tests, dependencies, tmux, or network operations.
+See `arena/README.md` in the runtime for examples and ownership boundaries.
 
 ## Upgrade, repair, reinstall, uninstall
 

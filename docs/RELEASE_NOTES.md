@@ -1,5 +1,19 @@
 # Playbook Harness release notes
 
+## Portable historical cases — 2026-08-09
+
+This release adds `pb-arena case list|prepare|doctor` and two real historical recipes.
+Nub Markdown format is pinned to an exact project commit and task seed. Semlabel
+dedup-hard is byte-exact to the former evaluator fixture while explicitly caveated
+because its original-project commit was never recorded.
+
+Reconstruction reads exact Git blobs from caller-bound local repositories, disables
+replacement objects, ignores dirty worktrees, verifies patches/optional corpus
+objects, rejects links, traversal, credential shapes and named future leakage, and
+publishes only the expected normalized tree hash. Doctor double-builds and self-cleans.
+The runtime owns code/manifests/patches only—not source repositories, prepared
+workspaces, dependencies, tmux sessions, results, or large/private corpus objects.
+
 ## Persistent tmux agent transport — 2026-08-09
 
 This release adds optional `pb-tmux-agent` lifecycle commands for durable,

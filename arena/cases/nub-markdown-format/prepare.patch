@@ -1,0 +1,92 @@
+diff --git a/.agent/tasks/001-markdown-format/task.md b/.agent/tasks/001-markdown-format/task.md
+new file mode 100644
+--- /dev/null
++++ b/.agent/tasks/001-markdown-format/task.md
+@@ -0,0 +1,87 @@
++# 001 - Markdown Format
++
++> **Gate discipline:** One gate → do work → check box → next gate.
++> Never batch. Never backfill. The document IS the execution trace.
++> **Closing a gate:** check the box, append your outcome. Never replace the original text.
++> Design Phase = orientation (one gate, brief answer). Work Plan = real work (one gate, full effort).
++> If you see the same gate 5+ times in the hook echo, you're drifting — STOP and update.
++
++## Status
++pending
++
++> **Before filling this in:** run `tasks work <N>` to activate this task. Hooks won't enforce until activated.
++
++## Intent
++Add Markdown format strategy to preserve heading hierarchy (H1 > H2 > H3) and enable semantic navigation of documentation.
++
++## Why
++Markdown is ubiquitous in codebases (README.md, docs/, ARCHITECTURE.md). Currently treated as generic text — heading structure is lost. The Python AST format proved that semantic parsing dramatically improves navigation; Markdown deserves the same.
++
++## References
++- [ ] Context: `grep -Ein "markdown|format|strategy" MIND_MAP.md` → paste relevant excerpts below
++- `src/nub/formats/python.py` — closest pattern (AST → Node tree, LOD render)
++- `src/nub/formats/markdown.py` — current stub with TODOs
++- `src/nub/formats/base.py` — FormatStrategy interface
++- Origin: Mind Map [7] Format Strategies
++- Playbook: playbook/Build
++- Note: Don't hardcode task numbers in plans — `tasks new` auto-increments.
++- Note: Use `python3` (not `python`) and `uv run pytest` for running tests.
++
++---
++
++## Design Phase
++
++> **Write a 1-sentence answer for each gate.** A bare checkmark means you skipped it.
++> Complete these gates before writing the work plan.
++> (The `/playbook` skill has workflow patterns if you need a reference.)
++
++### Understand
++- [ ] Restate the request in my own words. What does the user actually want?
++- [ ] Critique: Am I solving the stated problem or a different one I find more interesting?
++- [ ] What would "done" look like? How will we know the task succeeded?
++- [ ] What is OUT of scope for this task?
++
++### Structure
++- [ ] What kind of work is this? (build / investigate / evaluate / decide / combination?) If combination, what's the sequence? If >15 gates or uncertain approach, where do you stop and validate direction?
++
++### Reflection Gates
++- [ ] Wrote task-specific check questions (Bad: "is this working?" Good: "Does the output include the progress counter?" — the answer should require evidence, not just yes/no)
++- [ ] Before the riskiest step: what would make you stop and reconsider?
++- [ ] If judging quality before building: is the gap worth closing?
++
++### Verify
++- [ ] Review the work plan. If a likely growth point exists, add it to the plan now.
++- [ ] Does the work plan include moments where you stop and question your approach — not just execute?
++- [ ] Checkpoint: Would a fresh agent understand this task and execute it well?
++- [ ] The work plan below has the right granularity (not too coarse, not micro-steps)
++
++## Judge
++- [ ] Run `tasks judge 001` — wait for it to finish (it edits this file). Re-read this file to see its findings below, then address valid concerns by revising Work Plan gates.
++
++(judge findings appear here)
++
++---
++
++## Work Plan
++
++> For each work section: what could go wrong? How will you know it worked? (specific check, not "looks good")
++> Standard feature: 6-8 work gates + tests. If >15 gates, validate the approach first.
++
++(write work gates here)
++
++---
++
++## Pre-review
++- [ ] All tests pass
++- [ ] No debug artifacts
++- [ ] MIND_MAP.md updated if new insights emerged
++
++## Parked
++(Findings or ideas that emerged during work but are out of scope. Describe each with enough context for a future task to pick it up.)
++
++---
++
++## Standing Orders
++- **Expand dynamically**: When you discover something you'll need to do, write new gates immediately — don't wait until you get there.
++- **Steer openly**: If your direction changes, edit your open (unchecked) gates to reflect reality. The plan is alive, not a contract.
++- **Never defer awareness**: The moment you realize work exists, capture it. Forgetting is the failure mode, not having too many gates.

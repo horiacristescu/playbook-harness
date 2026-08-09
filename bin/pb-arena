@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null \
+    || { echo "Playbook needs python3 >= 3.10 (found: $(python3 --version 2>&1))" >&2; exit 1; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+CONTAINER_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+if [ -d "$CONTAINER_ROOT/arena/src/playbook_arena" ]; then
+    ARENA_ROOT="$CONTAINER_ROOT/arena"
+else
+    ARENA_ROOT="$CONTAINER_ROOT"
+fi
+if [ ! -d "$ARENA_ROOT/src/playbook_arena" ]; then
+    echo "Error: arena runtime not found at $ARENA_ROOT/src/playbook_arena" >&2
+    exit 1
+fi
+PYTHONPATH="$ARENA_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m playbook_arena.cli "$@"

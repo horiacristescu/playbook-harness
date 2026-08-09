@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "semlabel-dedup-hard",
+  "title": "Semlabel deduplication hard fixture",
+  "description": "Reconstruct the real copied fixture used by the historical Playbook ablation campaign.",
+  "fidelity": "caveated",
+  "caveats": [
+    "The retired case recorded no original Semlabel repository commit.",
+    "The fixture semlabel.py hash matches no revision in the current standalone Semlabel Git history.",
+    "Reconstruction is byte-exact to the evaluator fixture, not proven exact to an original-project moment.",
+    "Historical Python/model dependencies are not installed or executed by case doctor."
+  ],
+  "source": {
+    "id": "playbook-development",
+    "kind": "local_git",
+    "commit": "1bc3f049e581414d7fba055aa0fb94ce3948a8d1",
+    "subdir": "evals/cases/semlabel-dedup-hard/fixture"
+  },
+  "preparation": {
+    "patch": "prepare.patch",
+    "overlay": null
+  },
+  "leakage": {
+    "forbidden_paths": ["dedup.py", "evaluate_dedup.py", "tests/test_dedup.py"],
+    "forbidden_content": ["def dedup_embedding", "def dedup_ngram"]
+  },
+  "requirements": {
+    "tools": ["git"]
+  },
+  "provenance": {
+    "historical_task": "retired evaluator case semlabel-dedup-hard and Tasks 092-099",
+    "source_note": "The pinned Playbook commit owns the exact copied fixture bytes; the original Semlabel source commit is unknown.",
+    "transcript_status": "Campaign traces remain in pre-retirement Git, but no canonical human transcript is packaged in schema 1.",
+    "rubric_status": "The hard task seed embeds deterministic evaluation requirements; campaign rubric knowledge is summarized in docs/eval-history.md."
+  }
+}

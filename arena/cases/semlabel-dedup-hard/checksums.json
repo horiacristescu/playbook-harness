@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "case_id": "semlabel-dedup-hard",
+  "inputs": {
+    "prepare.patch": "bd76f8d9dfcc39400a4a1e7ae268e2d4dfb14c2ef51dd06538e1588167ed540e"
+  },
+  "prepared_tree_sha256": "d7bac6aa6aa4ed10ee8e52bd898b9a3ae8b0fccebcd37279881994f71496d099"
+}

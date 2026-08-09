@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "case_id": "nub-markdown-format",
+  "inputs": {
+    "prepare.patch": "a00ca9e86cd1510a70b94e8575be37f7598b4172f683cd2c370a6709043edd1f"
+  },
+  "prepared_tree_sha256": "3b2f9e477900dd767f414aed889430acfe628fe5d2fc6764e5a65a64cf5551c7"
+}

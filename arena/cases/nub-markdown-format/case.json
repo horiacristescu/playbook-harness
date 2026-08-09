@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "id": "nub-markdown-format",
+  "title": "Nub Markdown format",
+  "description": "Add a Markdown format strategy at the real pre-implementation Nub project state.",
+  "fidelity": "exact",
+  "caveats": [],
+  "source": {
+    "id": "code-monorepo",
+    "kind": "local_git",
+    "commit": "c065d3bd67c0b5236c1f4a6f7cdeac5dd2e7af9d",
+    "subdir": "nub"
+  },
+  "preparation": {
+    "patch": "prepare.patch",
+    "overlay": null
+  },
+  "leakage": {
+    "forbidden_paths": [".agent/chat_log.md"],
+    "forbidden_content": [
+      "HEADING_PATTERN = re.compile",
+      "CODE_FENCE_PATTERN = re.compile",
+      "registry.register(MarkdownStrategy())"
+    ]
+  },
+  "requirements": {
+    "tools": ["git"]
+  },
+  "provenance": {
+    "historical_task": "retired evaluator case nub-markdown-format",
+    "source_note": "The retired case named this repository commit and subdirectory; Git contains the complete pre-solution tree.",
+    "transcript_status": "The old case retained a task seed and run traces, not a canonical human transcript; controller packaging is deferred.",
+    "rubric_status": "The retired rubric is summarized in docs/eval-history.md and remains recoverable from pre-retirement Git; it is hidden from this prepared workspace."
+  }
+}

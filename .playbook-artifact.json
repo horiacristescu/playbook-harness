@@ -9,14 +9,92 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "dd7fbd62c93dae9cfa8985bb8e9262dbc83cd195acd945d68b671d266d673ea3",
+      "sha256": "b4f187927ef4a55790225fbed890d021726dba27bb7dc9cf6c7f80b5c33c2cf3",
       "source": "README.md"
+    },
+    {
+      "destination": "arena/README.md",
+      "mode": "0644",
+      "sha256": "d37798bf7f821a3ff53b46c1ecf10f4f1c6a4505d1cb8bff8e7e1515e1afaf0b",
+      "source": "arena/README.md"
+    },
+    {
+      "destination": "arena/cases/nub-markdown-format/case.json",
+      "mode": "0644",
+      "sha256": "5a1c753b720ea5e5fe271081a5b650801442d821b7676a6ca3ac2f7f2cbdcd76",
+      "source": "arena/cases/nub-markdown-format/case.json"
+    },
+    {
+      "destination": "arena/cases/nub-markdown-format/checksums.json",
+      "mode": "0644",
+      "sha256": "f48cc3f14e8328c131ab80c65226e03c543e370bf706ca2638e0774a18d60831",
+      "source": "arena/cases/nub-markdown-format/checksums.json"
+    },
+    {
+      "destination": "arena/cases/nub-markdown-format/prepare.patch",
+      "mode": "0644",
+      "sha256": "a00ca9e86cd1510a70b94e8575be37f7598b4172f683cd2c370a6709043edd1f",
+      "source": "arena/cases/nub-markdown-format/prepare.patch"
+    },
+    {
+      "destination": "arena/cases/semlabel-dedup-hard/case.json",
+      "mode": "0644",
+      "sha256": "4575aa7f88755557a8e26335137a16172474ac2e2d2da6a583a8f34ed2579b29",
+      "source": "arena/cases/semlabel-dedup-hard/case.json"
+    },
+    {
+      "destination": "arena/cases/semlabel-dedup-hard/checksums.json",
+      "mode": "0644",
+      "sha256": "8e560075b95f087178e0d15477292645ed2ffead532f021619a583430ebd6362",
+      "source": "arena/cases/semlabel-dedup-hard/checksums.json"
+    },
+    {
+      "destination": "arena/cases/semlabel-dedup-hard/prepare.patch",
+      "mode": "0644",
+      "sha256": "bd76f8d9dfcc39400a4a1e7ae268e2d4dfb14c2ef51dd06538e1588167ed540e",
+      "source": "arena/cases/semlabel-dedup-hard/prepare.patch"
+    },
+    {
+      "destination": "arena/src/playbook_arena/__init__.py",
+      "mode": "0644",
+      "sha256": "334f94d7322c8232e1e3373f9e71c57e17275df915d3d014ef4022feeafb9812",
+      "source": "arena/src/playbook_arena/__init__.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/case.py",
+      "mode": "0644",
+      "sha256": "f3e87fa62cb421dd1f19208a70e58fe89cacae6aa63a9e87b5fce92025020e92",
+      "source": "arena/src/playbook_arena/case.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/cli.py",
+      "mode": "0644",
+      "sha256": "fd98a4ddc5002457fca758805c19089e623e21c76985ed67deef4e1cf7803f53",
+      "source": "arena/src/playbook_arena/cli.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/git_source.py",
+      "mode": "0644",
+      "sha256": "cf9cd90241cd06c33345aad6675622df682fe22e2047e82850b9ca1aadece4fd",
+      "source": "arena/src/playbook_arena/git_source.py"
+    },
+    {
+      "destination": "arena/src/playbook_arena/prepare.py",
+      "mode": "0644",
+      "sha256": "7cf880398dc9d8ddb5d2fc9058cf8859ba336ca05a3d011fb971b73760d3a952",
+      "source": "arena/src/playbook_arena/prepare.py"
     },
     {
       "destination": "bin/pb-agy",
       "mode": "0755",
       "sha256": "ce4eeda708327cf8171959a0e57dff548e43fb1a5c9cf046b5e271930e1e176c",
       "source": "bin/playbook-agy"
+    },
+    {
+      "destination": "bin/pb-arena",
+      "mode": "0755",
+      "sha256": "076a920d7d9110a07e45ab210ca9e6feff1d433dc33244194c8aea04c3786e20",
+      "source": "arena/bin/arena"
     },
     {
       "destination": "bin/pb-codex",
@@ -93,7 +171,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "a6010a73a1d0bea5386c73b2ff5629510d94377236fce66d5640edfed3412d6a",
+      "sha256": "4753bb1a814976434772c7548e35aa19950dc3cd87f58fb4d3d65e4750cc3eb8",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -111,7 +189,7 @@
     {
       "destination": "install.sh",
       "mode": "0755",
-      "sha256": "11f9fb3abac2468d9e87fcc6de43622d1a996d3ffaf2b1a54777ea50ad4bf412",
+      "sha256": "79fdc064e58a31ba8854226dfbcad7a5eae2c62be3a6b1963df095191fa9b246",
       "source": "install.sh"
     },
     {
@@ -459,7 +537,7 @@
     {
       "destination": "src/tasks/installed_audit.py",
       "mode": "0644",
-      "sha256": "13b09bb4905d13bc18c5f22e8bae4b297e386dac370d2368cf60f12e3ccd789d",
+      "sha256": "6923dad0ce67d8e932a469abc6ac4badedc6e9898a2c21ddb69cfd4a75fe46ef",
       "source": "src/tasks/installed_audit.py"
     },
     {

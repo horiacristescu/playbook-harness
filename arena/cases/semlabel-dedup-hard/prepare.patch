@@ -1,0 +1,72 @@
+diff --git a/.agent/tasks/001-add-dedup/task.md b/.agent/tasks/001-add-dedup/task.md
+new file mode 100644
+--- /dev/null
++++ b/.agent/tasks/001-add-dedup/task.md
+@@ -0,0 +1,67 @@
++# 001 - Deduplicate Training Candidates
++
++> **Gate discipline:** One gate → do work → check box → next gate.
++> **Closing a gate:** check the box, append your outcome. Never replace the original text.
++
++## Status
++pending
++
++## Intent
++Training rounds waste LLM budget on duplicate candidates. The same article crossposted to multiple subreddits appears multiple times in each batch. Implement two dedup methods, evaluate them against labeled ground truth, find optimal thresholds, pick the better default, and justify your choice with precision/recall numbers.
++
++## Why
++Observed during training: round 2 had ~20 unique items out of 40 — half the batch was duplicates. Each LLM classification costs tokens. Deduplication would double the effective diversity per round. Two methods because embedding similarity catches semantic duplicates while n-gram overlap catches textual duplicates — different failure modes. We need to know which works better for our data.
++
++## References
++- `semlabel.py` — main source, training loop in `train_command()`
++- `tests/` — existing test suite
++- `MIND_MAP.md` — update after implementation
++- `fixtures/posts_2026-02-21.jsonl` — training data (566 records)
++- `fixtures/posts_2026-02-21.embeds` — pre-computed embeddings
++- `fixtures/golden_duplicates.json` — labeled duplicate clusters (ground truth for evaluation)
++
++---
++
++## Design Phase
++
++### Understand
++- [ ] Read the training loop in `semlabel.py`. Where are candidates selected? How does the embedding work? Where would deduplication fit?
++- [ ] Understand the two dedup approaches: (1) dot product on pre-computed normalized embeddings, (2) char 3-gram cosine similarity via sklearn TfidfVectorizer sparse dot product (TF-IDF vectors are L2-normalized, so dot product = cosine). What are the trade-offs?
++- [ ] Read `fixtures/golden_duplicates.json` — understand the labeled clusters and duplicate types (exact vs near).
++- [ ] What does "done" look like? How will you verify both methods work?
++
++### Structure
++- [ ] Plan your approach. What module(s) to create? How to wire the `--dedup-method` flag? How will you evaluate against golden duplicates?
++
++### Reflection Gates
++- [ ] Test strategy: what are you testing and how? (point tests for specific behavior, property tests via `hypothesis` for invariants on transformations/parsers/arithmetic)
++
++## Plan Review
++- [ ] Run `.claude/bin/tasks plan-review 001` — wait for findings.
++
++---
++
++## Work Plan
++
++- [ ] Create `dedup.py` module with two functions: `dedup_embedding(texts, embeddings, threshold)` using dot product on the pre-computed normalized embedding vectors, and `dedup_ngram(texts, threshold)` using sklearn TfidfVectorizer with `analyzer='char'`, `ngram_range=(3,3)` and sparse dot product as overlap score. Both return a list of indices to keep. Do not hardcode thresholds — they are parameters to tune.
++- [ ] Write tests in `tests/test_dedup.py` for both methods: identical texts, near-duplicates, diverse texts, threshold edge cases. Test that both methods agree on obvious duplicates and keep obvious non-duplicates.
++- [ ] Create `evaluate_dedup.py` that evaluates both methods against `fixtures/golden_duplicates.json` using pairwise evaluation: for each threshold, compute all pairwise similarities across the 566 records, predict duplicate pairs (similarity >= threshold), then compare predicted pairs against golden pairs (all pairs within each golden cluster). Report precision (what fraction of predicted pairs are true duplicates), recall (what fraction of true duplicate pairs were predicted), and F1. Sweep thresholds to find optimal per method.
++- [ ] Add `--dedup-method` argument to `train_command()` accepting "embedding", "ngram", or "none". Use the optimal thresholds found above. Wire the chosen method into the training loop before sending candidates to the LLM.
++- [ ] Based on the evaluation, pick the better default for `--dedup-method` and justify the choice in MIND_MAP.md with the precision/recall numbers.
++- [ ] Run the full test suite — all tests must pass (0 failures).
++- [ ] Update MIND_MAP.md with what you built, including the evaluation results and the rationale for the default.
++
++---
++
++## Implementation Review
++- [ ] Run `.claude/bin/tasks impl-review 001` — wait for findings.
++
++---
++
++## Debrief
++- [ ] Freehand — work is done, stay for discussion. Remove if running headless.
++
++## Pre-review
++- [ ] All tests pass
++- [ ] No debug artifacts
++- [ ] MIND_MAP.md updated
