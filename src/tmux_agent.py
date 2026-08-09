@@ -445,6 +445,30 @@ def _process_group_exists(process_group: int) -> bool:
     return True
 
 
+def _terminate_process_group(process_group: int, *, grace: float) -> None:
+    """Boundedly terminate one group while its runner still proves ownership."""
+
+    if not _process_group_exists(process_group):
+        return
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace
+    while _process_group_exists(process_group) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if _process_group_exists(process_group):
+        try:
+            os.killpg(process_group, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+    kill_deadline = time.monotonic() + 2.0
+    while _process_group_exists(process_group) and time.monotonic() < kill_deadline:
+        time.sleep(0.02)
+    if _process_group_exists(process_group):
+        raise TmuxAgentError(f"owned process group survived termination: {process_group}")
+
+
 def stop_run(
     *,
     name: str,
@@ -479,17 +503,8 @@ def stop_run(
             break
         time.sleep(0.01)
 
-    if process_group is not None and _process_group_exists(process_group):
-        os.killpg(process_group, signal.SIGTERM)
-        while _process_group_exists(process_group) and time.monotonic() < deadline:
-            time.sleep(0.02)
-        if _process_group_exists(process_group):
-            os.killpg(process_group, signal.SIGKILL)
-        kill_deadline = time.monotonic() + 2.0
-        while _process_group_exists(process_group) and time.monotonic() < kill_deadline:
-            time.sleep(0.02)
-        if _process_group_exists(process_group):
-            raise TmuxAgentError(f"owned process group survived stop: {process_group}")
+    if process_group is not None:
+        _terminate_process_group(process_group, grace=max(0.0, deadline - time.monotonic()))
 
     result_deadline = time.monotonic() + 2.0
     while not paths.result.exists() and time.monotonic() < result_deadline:
@@ -652,6 +667,11 @@ def _runner_main(meta_path: Path, ready_path: Path) -> int:
                 pass
         time.sleep(0.02)
     return_code = int(child.returncode)
+    # The direct child may exit while helpers remain in its group.  Close that
+    # owned group before publishing a terminal result; after publication its PGID
+    # could eventually be reused, so later controllers must never signal it based
+    # only on stale durable metadata.
+    _terminate_process_group(child.pid, grace=2.0)
     stop_requested = (paths.run_dir / "stop.request.json").exists()
     state = "stopped" if stop_requested else ("completed" if return_code == 0 else "failed")
     atomic_write_json(
