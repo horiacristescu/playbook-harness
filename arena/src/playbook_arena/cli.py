@@ -133,6 +133,9 @@ def main(arguments: list[str] | None = None) -> int:
         return 0
     case = _select(options.cases_dir, options.case_id)
     sources = parse_source_bindings(options.source)
+    unknown_sources = sorted(set(sources) - {case.source.id})
+    if unknown_sources:
+        raise ArenaCaseError(f"source binding does not belong to case: {', '.join(unknown_sources)}")
     corpus = None if options.corpus is None else Path(options.corpus).expanduser()
     if options.case_command == "prepare":
         value = prepare_case(case, options.destination, sources=sources, corpus=corpus)

@@ -22,6 +22,8 @@ MAX_OVERLAY_FILE_BYTES = 64 * 1024 * 1024
 MAX_OVERLAY_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_GIT_FILE_BYTES = 64 * 1024 * 1024
 MAX_GIT_TOTAL_BYTES = 256 * 1024 * 1024
+MAX_WORKSPACE_FILE_BYTES = 64 * 1024 * 1024
+MAX_WORKSPACE_TOTAL_BYTES = 256 * 1024 * 1024
 CREDENTIAL_BASENAMES = frozenset(
     {".env", ".npmrc", ".pypirc", "credentials.json", "id_rsa", "id_ed25519", "service-account.json"}
 )
@@ -46,6 +48,7 @@ def sha256_file(path: Path) -> str:
 def _regular_files(root: Path, *, include_provenance: bool = False) -> list[Path]:
     files: list[Path] = []
     folded: set[str] = set()
+    total = 0
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
         if relative == PROVENANCE_FILE and not include_provenance:
@@ -57,6 +60,12 @@ def _regular_files(root: Path, *, include_provenance: bool = False) -> list[Path
         if not path.is_file():
             raise ArenaCaseError(f"workspace special files are forbidden: {relative}")
         safe_relative(relative, label="workspace path")
+        size = path.stat().st_size
+        if size > MAX_WORKSPACE_FILE_BYTES:
+            raise ArenaCaseError(f"workspace file is too large: {relative}")
+        total += size
+        if total > MAX_WORKSPACE_TOTAL_BYTES:
+            raise ArenaCaseError("prepared workspace is too large")
         key = relative.casefold()
         if key in folded:
             raise ArenaCaseError(f"case-colliding workspace paths are forbidden: {relative}")
@@ -95,10 +104,18 @@ def _verify_inputs(case: CaseDefinition, corpus: Path | None) -> Path | None:
     for relative, expected in case.input_hashes.items():
         if relative.startswith("overlay/"):
             continue
-        path = case.root.joinpath(*PurePosixPath(relative).parts)
-        if path.is_symlink() or not path.is_file():
+        path = case.root
+        for part in PurePosixPath(relative).parts:
+            path = path / part
+            if path.is_symlink():
+                raise ArenaCaseError(f"case input path may not traverse a symlink: {relative}")
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as exc:
+            raise ArenaCaseError(f"case input is unavailable: {relative}: {exc}") from exc
+        if case.root not in resolved.parents or not resolved.is_file():
             raise ArenaCaseError(f"case input must be a real file: {relative}")
-        if sha256_file(path) != expected:
+        if sha256_file(resolved) != expected:
             raise ArenaCaseError(f"case input hash mismatch: {relative}")
     if case.overlay is None:
         return None
@@ -227,12 +244,14 @@ def prepare_case(
     try:
         git_total = 0
         for entry in list_source_tree(repository, case.source):
-            blob = read_blob(repository, entry.object_id)
-            if len(blob) > MAX_GIT_FILE_BYTES:
+            if entry.size > MAX_GIT_FILE_BYTES:
                 raise ArenaCaseError(f"Git source file is too large: {entry.path}")
-            git_total += len(blob)
+            git_total += entry.size
             if git_total > MAX_GIT_TOTAL_BYTES:
                 raise ArenaCaseError("Git source subdirectory is too large")
+            blob = read_blob(repository, entry.object_id)
+            if len(blob) != entry.size:
+                raise ArenaCaseError(f"Git blob size changed during reconstruction: {entry.path}")
             _write_file(staging, entry.path, blob, entry.mode)
         _apply_patch(case, staging)
         if overlay is not None:

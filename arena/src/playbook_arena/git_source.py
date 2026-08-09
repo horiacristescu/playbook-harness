@@ -19,6 +19,7 @@ class GitEntry:
     path: str
     object_id: str
     mode: int
+    size: int
 
 
 def parse_source_bindings(values: Sequence[str]) -> dict[str, Path]:
@@ -75,7 +76,7 @@ def resolve_source(spec: SourceSpec, bindings: Mapping[str, Path]) -> Path:
 
 
 def list_source_tree(repo: Path, spec: SourceSpec) -> list[GitEntry]:
-    result = _git(repo, ["ls-tree", "-rz", "-r", "--full-tree", spec.commit, "--", spec.subdir])
+    result = _git(repo, ["ls-tree", "-lrz", "-r", "--full-tree", spec.commit, "--", spec.subdir])
     prefix = f"{spec.subdir}/"
     entries: list[GitEntry] = []
     seen_casefolded: set[str] = set()
@@ -84,10 +85,14 @@ def list_source_tree(repo: Path, spec: SourceSpec) -> list[GitEntry]:
             continue
         header, separator, raw_path = record.partition(b"\t")
         fields = header.split()
-        if not separator or len(fields) != 3:
+        if not separator or len(fields) != 4:
             raise ArenaCaseError("git returned malformed tree data")
-        mode_raw, kind, object_raw = fields
-        path = raw_path.decode("utf-8", errors="strict")
+        mode_raw, kind, object_raw, size_raw = fields
+        try:
+            path = raw_path.decode("utf-8", errors="strict")
+            size = int(size_raw)
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ArenaCaseError("Git tree contains an unsupported filename or size") from exc
         if not path.startswith(prefix):
             raise ArenaCaseError(f"git tree escaped source subdirectory: {path}")
         relative = safe_relative(path[len(prefix) :], label="Git tree path")
@@ -97,7 +102,7 @@ def list_source_tree(repo: Path, spec: SourceSpec) -> list[GitEntry]:
         if folded in seen_casefolded:
             raise ArenaCaseError(f"case-colliding Git paths are forbidden: {relative}")
         seen_casefolded.add(folded)
-        entries.append(GitEntry(relative, object_raw.decode("ascii"), int(mode_raw, 8)))
+        entries.append(GitEntry(relative, object_raw.decode("ascii"), int(mode_raw, 8), size))
     return sorted(entries, key=lambda entry: entry.path)
 
 

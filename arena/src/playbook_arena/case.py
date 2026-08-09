@@ -192,6 +192,8 @@ def load_case(case_dir: str | Path) -> CaseDefinition:
         raise ArenaCaseError("patch is missing from checksum inputs")
     if overlay is not None and f"overlay/{overlay.sha256}.tar.gz" not in input_hashes:
         raise ArenaCaseError("overlay is missing from checksum inputs")
+    if overlay is not None and input_hashes[f"overlay/{overlay.sha256}.tar.gz"] != overlay.sha256:
+        raise ArenaCaseError("overlay checksum input must equal its content-addressed sha256")
 
     return CaseDefinition(
         root=root,
