@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing"
+  short_description: "Derive tests from promises, experience, and risk"
+  default_prompt: "Use $testing to derive and prioritize test needs from this project."

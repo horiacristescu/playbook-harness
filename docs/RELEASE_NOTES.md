@@ -1,5 +1,27 @@
 # Playbook Harness release notes
 
+## Testing and culture skills — 2026-08-09
+
+This release adds two related but deliberately separate skills:
+
+- `/testing` is the focused confidence workflow. It derives test needs from
+  project promises, direct human corrections, architecture risks, and the
+  existing suite; consults a compact cross-project testing culture; then
+  recommends the one to five evidence upgrades whose benefit justifies their
+  cost.
+- `/culture` is the open-ended retrospective. It studies a project's lived
+  history, lets forms of inheritance emerge from the evidence, traces lineage
+  and supersession, and selects what future participants should carry.
+
+Neither skill invokes the other automatically. `/testing` owns the bounded
+testing method and its domain-specific `culture.md`; `/culture` can recover any
+kind of project culture and keeps its own retrospective template.
+
+The former `/intent-induced-testing` skill has been hard-renamed to `/testing`.
+There is no compatibility alias or retained old directory; use `/testing` in
+new prompts. Both complete skill trees ship in the central runtime and are
+reconciled into Claude projects by `pb-tasks init`.
+
 ## Retired partial write log — 2026-08-07
 
 The provider-dependent Write/Edit backup has been removed. It captured only

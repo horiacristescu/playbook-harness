@@ -87,7 +87,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "9ac0c1da5c7c8641087d9975b87f5780d4339aa227abae8590e7d101f5aa26d1",
+      "sha256": "c5d4a06ae28a87db54a46f269ec7bd722bce560733fd191b48e0e274f2009800",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -217,6 +217,24 @@
       "source": ".claude/skills/attribution/SKILL.md"
     },
     {
+      "destination": "skills/culture/SKILL.md",
+      "mode": "0644",
+      "sha256": "84f47e7b193493d923da9f4ebefad555b816774051d9069bb0ab1531f56c1872",
+      "source": ".claude/skills/culture/SKILL.md"
+    },
+    {
+      "destination": "skills/culture/agents/openai.yaml",
+      "mode": "0644",
+      "sha256": "e1d6b9a861574a163777c2cbb967996b7713abed0254e5bf57d8213d1495f25c",
+      "source": ".claude/skills/culture/agents/openai.yaml"
+    },
+    {
+      "destination": "skills/culture/assets/task-template.md",
+      "mode": "0644",
+      "sha256": "4699bcae46e4ca86b1551b5d7f209ebffa721372c59675af658fc878cb08f2df",
+      "source": ".claude/skills/culture/assets/task-template.md"
+    },
+    {
       "destination": "skills/judge/SKILL.md",
       "mode": "0644",
       "sha256": "1e3c0ac9cb13d889da1393b341fb4a3fb5532bb87ab0fa2a184f72d51e36b419",
@@ -275,6 +293,24 @@
       "mode": "0644",
       "sha256": "0f0b9548aad0bc8020d0d9e5e41cdde61ca745be7c6e2374228c7fd4954ea071",
       "source": ".claude/skills/tasks/base-template.md"
+    },
+    {
+      "destination": "skills/testing/SKILL.md",
+      "mode": "0644",
+      "sha256": "c08e4f0928dbecc91e0abda9545ec27442a3094585430680fa95e2ad05b6e0f2",
+      "source": ".claude/skills/testing/SKILL.md"
+    },
+    {
+      "destination": "skills/testing/agents/openai.yaml",
+      "mode": "0644",
+      "sha256": "11efc29c0f9f35b1f224a4b3fd716378f251f8b40f5adb88d2a747e1f88c2305",
+      "source": ".claude/skills/testing/agents/openai.yaml"
+    },
+    {
+      "destination": "skills/testing/culture.md",
+      "mode": "0644",
+      "sha256": "afa908112eeebd62d4d3e3172f38d41054d0414aef4e2d12c110a64aaae767cb",
+      "source": ".claude/skills/testing/culture.md"
     },
     {
       "destination": "src/bash-log/bash-log.sh",

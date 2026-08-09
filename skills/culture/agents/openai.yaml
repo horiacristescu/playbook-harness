@@ -1,0 +1,4 @@
+interface:
+  display_name: "Culture"
+  short_description: "Select project history worth transmitting"
+  default_prompt: "Use $culture to create and run an open-ended cultural retrospective task for this project."
