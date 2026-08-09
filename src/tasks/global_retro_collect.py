@@ -39,7 +39,6 @@ TASK_DIR_RE = re.compile(r"^(?P<number>\d{3})-(?P<slug>.+)$")
 
 TOP_LEVEL_ALLOW = {
     "MIND_MAP.md",
-    "MIND_MAP_OVERFLOW.md",
     "CLAUDE.md",
     "AGENTS.md",
     "GEMINI.md",

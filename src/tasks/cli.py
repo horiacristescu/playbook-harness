@@ -836,7 +836,7 @@ def _prepare_merge_mindmap(project_path: Path, target: str, merge_base: str) -> 
         return hashlib.md5(text.encode()).hexdigest()
 
     collision_found = False
-    for filename in ("MIND_MAP.md", "MIND_MAP_OVERFLOW.md"):
+    for filename in ("MIND_MAP.md",):
         base_nodes = _parse_nodes(_git_show_text(merge_base, filename))
         target_nodes = _parse_nodes(_git_show_text(target, filename))
         cur_file = project_path / filename
@@ -2644,100 +2644,6 @@ def main():
             print(f" ({failed} failed)")
         else:
             print()
-
-    elif cmd == "mindmap-sync":
-        import re as _re
-        project_path = find_project_root()
-        main_file = project_path / "MIND_MAP.md"
-        overflow_file = project_path / "MIND_MAP_OVERFLOW.md"
-
-        if not main_file.exists():
-            print("Error: MIND_MAP.md not found", file=sys.stderr)
-            sys.exit(1)
-        if not overflow_file.exists():
-            print("Error: MIND_MAP_OVERFLOW.md not found", file=sys.stderr)
-            sys.exit(1)
-
-        fix_mode = "--fix" in cmd_args
-
-        def _extract_nodes(filepath: Path) -> dict[int, str]:
-            """Extract {node_id: full_text} from a mind map file."""
-            content = filepath.read_text(encoding="utf-8")
-            nodes: dict[int, str] = {}
-            parts = _re.split(r'(?m)^(?=\[\d+\])', content)
-            for part in parts:
-                m = _re.match(r'^\[(\d+)\]', part)
-                if m:
-                    nodes[int(m.group(1))] = part.strip()
-            return nodes
-
-        main_nodes = _extract_nodes(main_file)
-        overflow_nodes = _extract_nodes(overflow_file)
-
-        # Size stats
-        main_size = main_file.stat().st_size
-        overflow_size = overflow_file.stat().st_size
-        full_count = sum(1 for nid in main_nodes if '↗' not in main_nodes[nid])
-        summary_count = len(main_nodes) - full_count
-        print(f"MIND_MAP.md: {main_size:,} chars (~{main_size // 4:,} tokens), "
-              f"{len(main_nodes)} nodes ({full_count} full, {summary_count} summary/↗)")
-        print(f"MIND_MAP_OVERFLOW.md: {overflow_size:,} chars, {len(overflow_nodes)} nodes")
-        print()
-
-        # Missing nodes
-        main_only = sorted(set(main_nodes) - set(overflow_nodes))
-        overflow_only = sorted(set(overflow_nodes) - set(main_nodes))
-        if main_only:
-            print(f"Missing from overflow: {main_only}")
-        if overflow_only:
-            print(f"Missing from main: {overflow_only}")
-
-        # Content drift (full nodes only — summary nodes are intentionally shorter)
-        drifted_main_ahead: list[tuple[int, int]] = []
-        drifted_overflow_ahead: list[tuple[int, int]] = []
-        for nid in sorted(set(main_nodes) & set(overflow_nodes)):
-            main_text = main_nodes[nid]
-            overflow_text = overflow_nodes[nid]
-            if '↗' not in main_text and main_text != overflow_text:
-                diff = len(main_text) - len(overflow_text)
-                if diff > 0:
-                    drifted_main_ahead.append((nid, diff))
-                else:
-                    drifted_overflow_ahead.append((nid, -diff))
-
-        if drifted_main_ahead or drifted_overflow_ahead:
-            print("Content drift (full nodes only):")
-            for nid, diff in drifted_main_ahead:
-                print(f"  [{nid}] main AHEAD by {diff} chars")
-            for nid, diff in drifted_overflow_ahead:
-                print(f"  [{nid}] overflow AHEAD by {diff} chars")
-        else:
-            print("No content drift.")
-
-        # Cross-reference health
-        all_main_text = main_file.read_text(encoding="utf-8")
-        all_refs = set(int(m.group(1)) for m in _re.finditer(r'\[(\d+)\]', all_main_text))
-        broken = sorted(all_refs - set(main_nodes))
-        if broken:
-            print(f"\nBroken cross-references: {broken}")
-
-        # --fix: copy main→overflow for nodes where main is ahead
-        if fix_mode and (drifted_main_ahead or main_only):
-            overflow_content = overflow_file.read_text(encoding="utf-8")
-            fixed = 0
-            for nid, _ in drifted_main_ahead:
-                old_text = overflow_nodes[nid]
-                new_text = main_nodes[nid]
-                overflow_content = overflow_content.replace(old_text, new_text)
-                fixed += 1
-            for nid in main_only:
-                overflow_content = overflow_content.rstrip() + "\n\n" + main_nodes[nid] + "\n"
-                fixed += 1
-            overflow_file.write_text(overflow_content, encoding="utf-8")
-            print(f"\nFixed: synced {fixed} node(s) main→overflow")
-        elif drifted_main_ahead or main_only:
-            fixable = len(drifted_main_ahead) + len(main_only)
-            print(f"\n{fixable} node(s) can be auto-synced main→overflow. Run: tasks mindmap-sync --fix")
 
     elif cmd == "log":
         # tasks log [N] [--width W]

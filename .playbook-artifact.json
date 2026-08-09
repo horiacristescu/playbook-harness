@@ -63,7 +63,7 @@
     {
       "destination": "commands/mindmap-optimize.md",
       "mode": "0644",
-      "sha256": "316cd4cea4363ac7219695cfa0f4d0323a5359c0d11abc1f2f21318e6cec52fe",
+      "sha256": "e4ef940381cf9f4c8118bc5f49d7dbb0413a4e4bdd1a42e39d8da5db13d38595",
       "source": ".claude/commands/mindmap-optimize.md"
     },
     {
@@ -87,7 +87,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "c5d4a06ae28a87db54a46f269ec7bd722bce560733fd191b48e0e274f2009800",
+      "sha256": "3de411cd8b7eebb345924a38d210bf48be253f9c1fc239782b6321393e23e8f3",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -189,19 +189,19 @@
     {
       "destination": "scripts/state-echo-hook",
       "mode": "0755",
-      "sha256": "86300291148a5728af65ac23dead9d48026d11a7c5ada76fe84ed0a2afd2b9f7",
+      "sha256": "64f35ab8d0ad4c76939c3af9adef811f3e6d320be5a11e2aece5e64abd0b0093",
       "source": "scripts/state-echo-hook"
     },
     {
       "destination": "scripts/stop-hook",
       "mode": "0755",
-      "sha256": "15eede39df370ad90658522906afeee625b45a43a62b3e0d759522a60196ab43",
+      "sha256": "78e492faa0b9f34d8a585f5515a6bba3d89430509121c2e64c9eff49800477d4",
       "source": "scripts/stop-hook"
     },
     {
       "destination": "scripts/task-gate-hook",
       "mode": "0755",
-      "sha256": "f8a93c3ffbe74a6038634cfad6dffaee1187f42be755c18fb4ebd0f0da165748",
+      "sha256": "0e5e56de5224a60d8a45306ea118875fdee2e12f97b90e6ac282088e003f851a",
       "source": "scripts/task-gate-hook"
     },
     {
@@ -219,7 +219,7 @@
     {
       "destination": "skills/culture/SKILL.md",
       "mode": "0644",
-      "sha256": "84f47e7b193493d923da9f4ebefad555b816774051d9069bb0ab1531f56c1872",
+      "sha256": "59c3417413930b5a9a3c924c4bf9ec62bc7d815b1faee07205f7bda20dee9c9c",
       "source": ".claude/skills/culture/SKILL.md"
     },
     {
@@ -231,7 +231,7 @@
     {
       "destination": "skills/culture/assets/task-template.md",
       "mode": "0644",
-      "sha256": "4699bcae46e4ca86b1551b5d7f209ebffa721372c59675af658fc878cb08f2df",
+      "sha256": "ae6bdd7bebc957bfd9e8f9ead66c77737aa75094f41be7b09d044672d5d99a05",
       "source": ".claude/skills/culture/assets/task-template.md"
     },
     {
@@ -435,7 +435,7 @@
     {
       "destination": "src/tasks/cli.py",
       "mode": "0644",
-      "sha256": "7a679bad68a94bd748d553359840479400ae2514394409c3377c4184049f40e8",
+      "sha256": "8e93b153ab08dad987635071532132be4d3ced04c1c0c228cf3c94a83254dcba",
       "source": "src/tasks/cli.py"
     },
     {
@@ -447,7 +447,7 @@
     {
       "destination": "src/tasks/global_retro_collect.py",
       "mode": "0644",
-      "sha256": "765f43994e48002366e64cc03aa8fc6d72f5f8ff5eb55e3087c8624aca8b0889",
+      "sha256": "61aa7e9f36d16b27d2ce05112b4978c8a8252f4cc7f42d2eecc07f8093ce1cc5",
       "source": "src/tasks/global_retro_collect.py"
     },
     {
@@ -483,7 +483,7 @@
     {
       "destination": "src/tasks/retro.py",
       "mode": "0644",
-      "sha256": "1939aa9408c2c8c8cbe34f2b3336d05c0510069b90e7ceaa53729c58d467594b",
+      "sha256": "19a039545e4b5e831957b4cb910eaf879e1ee4af7253a6e54bc4a99330a6840b",
       "source": "src/tasks/retro.py"
     },
     {
@@ -495,7 +495,7 @@
     {
       "destination": "src/tasks/template.py",
       "mode": "0644",
-      "sha256": "de82c578b60e89ce9de27e1b5225c0ce27d4d5724cb94e5a4f1b0893e3a38dbb",
+      "sha256": "369bedc60dabe9a783e55d3e50350075de5c669a558d2a1a2620a450ab8c90b6",
       "source": "src/tasks/template.py"
     },
     {

@@ -438,7 +438,7 @@ def generate_retro_task(
     lines.append("")
     lines.append("- [ ] For each mind map node: does it carry information that would cost an agent significant time to rediscover? If not, compress or remove.")
     lines.append("- [ ] Are there new decisions, patterns, or relationships from this window that should be added?")
-    lines.append("- [ ] Apply edits. Keep MIND_MAP.md ≤25KB (the load budget); push full node text to MIND_MAP_OVERFLOW.md.")
+    lines.append("- [ ] Apply edits. Keep MIND_MAP.md ≤25KB (the load budget); route deep evidence to tasks, documentation, or source rather than a parallel map.")
     lines.append("")
 
     # Phase 6: Findings

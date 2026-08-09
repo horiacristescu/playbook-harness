@@ -25,7 +25,7 @@ cost.
 - Origin: `/culture`
 - Primary chat history: `[resolve chat_log.md for the intended project/user scope]`
 - Historical tasks: `[resolve task root and included task range]`
-- Project memory: `MIND_MAP.md` and `MIND_MAP_OVERFLOW.md` when present
+- Project memory: `MIND_MAP.md`, prior cultural artifacts, and retired maps in history when relevant
 - Prior cultural artifact, if any: `[path or none]`
 - Output cultural artifact: `[choose a durable project path]`
 - Working ledger: this task directory's `inheritance-ledger.md`
@@ -58,7 +58,7 @@ cost.
 
 ### Existing memory
 
-- [ ] Read `MIND_MAP.md`, overflow, and any prior culture artifact end to end. Mark which ledger candidates are already preserved well, preserved without their lived correction or authorship, obsolete, or absent. Do not treat existing memory as ground truth.
+- [ ] Read `MIND_MAP.md` and any prior culture artifact end to end; inspect retired map forms from history when they bear on a candidate. Mark which ledger candidates are already preserved well, preserved without their lived correction or authorship, obsolete, or absent. Do not treat existing memory as ground truth.
 
 ---
 

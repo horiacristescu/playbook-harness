@@ -39,14 +39,6 @@ if [ "$STOP_ACTIVE" = "True" ]; then
     exit 0
 fi
 
-# --- Eval mode: skip stop guard if stop_guard=off ---
-if [ -n "$PLAYBOOK_EVAL_CONFIG" ] && [ -f "$PLAYBOOK_EVAL_CONFIG" ]; then
-    EVAL_STOP=$(python3 -c "import json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('stop_guard','on'))" 2>/dev/null || echo "on")
-    if [ "$EVAL_STOP" = "off" ]; then
-        exit 0
-    fi
-fi
-
 SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
 STATE_FILE="$SESSION_DIR/current_state"
 

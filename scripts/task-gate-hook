@@ -112,26 +112,6 @@ SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
 STATE_FILE="$SESSION_DIR/current_state"
 mkdir -p "$SESSION_DIR"
 
-# --- Eval mode: skip guards if pretool_guard=off (keep session injection in Guard 2) ---
-if [ -n "$PLAYBOOK_EVAL_CONFIG" ] && [ -f "$PLAYBOOK_EVAL_CONFIG" ]; then
-    EVAL_PRETOOL=$(python3 -c "import json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('pretool_guard','on'))" 2>/dev/null || echo "on")
-    if [ "$EVAL_PRETOOL" = "off" ]; then
-        # Skip all guards, jump straight to Guard 2 (Bash session injection)
-        if [ "$TOOL_NAME" = "Bash" ]; then
-            CMD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('tool_input',{}).get('command',''))" 2>/dev/null || echo "")
-            if echo "$CMD" | grep -qE 'tasks\s+(work|status|bootstrap|freehand|retro|new)' && [ -n "$SESSION_ID" ]; then
-                UPDATED_CMD="export PLAYBOOK_SESSION_ID=$SESSION_ID; $CMD"
-                JSON_CMD=$(python3 -c "import json; print(json.dumps('$UPDATED_CMD'))" 2>/dev/null)
-                cat <<EOF
-{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","updatedInput":{"command":${JSON_CMD}}}}
-EOF
-                exit 0
-            fi
-        fi
-        echo '{}'; exit 0
-    fi
-fi
-
 # --- Guard 0: Write — block creating new task.md files (only pb-tasks new CLI does that) ---
 if [ "$TOOL_NAME" = "Write" ]; then
     FILE_PATH=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tool_input',{}).get('file_path',''))" 2>/dev/null || echo "")

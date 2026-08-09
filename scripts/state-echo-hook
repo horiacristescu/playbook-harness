@@ -102,17 +102,6 @@ INPUT=$(cat)
 SESSION_ID="$(resolve_session_id)"
 TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tool_name',''))" 2>/dev/null || echo "")
 
-# --- Eval mode: read config flags if PLAYBOOK_EVAL_CONFIG is set ---
-EVAL_GATE_ECHO="on"
-EVAL_NUDGES="typed"
-if [ -n "$PLAYBOOK_EVAL_CONFIG" ] && [ -f "$PLAYBOOK_EVAL_CONFIG" ]; then
-    EVAL_GATE_ECHO=$(python3 -c "import sys,json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('gate_echo','on'))" 2>/dev/null || echo "on")
-    EVAL_NUDGES=$(python3 -c "import sys,json; print(json.loads(open('$PLAYBOOK_EVAL_CONFIG').read()).get('nudges','typed'))" 2>/dev/null || echo "typed")
-    echo "⚠ EVAL MODE: gate_echo=${EVAL_GATE_ECHO}, nudges=${EVAL_NUDGES}" >&2
-    # Write file-based marker for harness verification (stream-json doesn't capture hook output)
-    echo "gate_echo=${EVAL_GATE_ECHO},nudges=${EVAL_NUDGES}" > "$AGENT_DIR/eval-marker" 2>/dev/null || true
-fi
-
 SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
 mkdir -p "$SESSION_DIR"
 STATE_FILE="$SESSION_DIR/current_state"
@@ -276,23 +265,8 @@ else
     fi
 fi
 
-# --- Build output (guarded by eval flags — state logic above always runs) ---
-# Eval verification marker — harness checks for this in claude-raw.jsonl
-if [ -n "$PLAYBOOK_EVAL_CONFIG" ]; then
-    EVAL_MARKER="# [eval:gate_echo=${EVAL_GATE_ECHO},nudges=${EVAL_NUDGES}]"
-fi
-if [ "$EVAL_GATE_ECHO" = "off" ]; then
-    CONTEXT="${EVAL_MARKER:-}"
-elif [ -n "$EVAL_MARKER" ]; then
-    # Eval mode with gate echo on — prepend marker to normal output
-    if [ "$IS_FREEHAND" = true ]; then
-        CONTEXT="${EVAL_MARKER}
-# [${TASK}] Freehand mode — wait for user instructions. Close only when user says done."
-    else
-        CONTEXT="${EVAL_MARKER}
-$(format_context "$TASK" "$DONE_GATES" "$TOTAL_GATES" "${GATE_TEXT}" "$GATE_LINE" "$REL_PATH")"
-    fi
-elif [ "$IS_FREEHAND" = true ]; then
+# --- Build output ---
+if [ "$IS_FREEHAND" = true ]; then
     CONTEXT="# [${TASK}] Freehand mode — wait for user instructions. Close only when user says done."
 else
     CONTEXT=$(format_context "$TASK" "$DONE_GATES" "$TOTAL_GATES" "${GATE_TEXT}" "$GATE_LINE" "$REL_PATH")
@@ -308,10 +282,7 @@ if [ -n "$BARE_MSG" ]; then
     CONTEXT="${CONTEXT}${BARE_MSG}"
 fi
 # Tool-type-aware nudge — silent on first call, silent on operate, class-specific otherwise
-# Eval flags: off=no nudge, flat=old 19-item rotation, typed=current (default)
-if [ "$EVAL_NUDGES" = "off" ] || [ "$EVAL_GATE_ECHO" = "off" ]; then
-    : # no nudge
-elif [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" != true ] && [ "$NEW_COUNT" -gt 1 ]; then
+if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" != true ] && [ "$NEW_COUNT" -gt 1 ]; then
     TOOL_CLASS=$(classify_tool "$TOOL_NAME" "$INPUT")
     case "$TOOL_CLASS" in
         orient)

@@ -1,5 +1,24 @@
 # Playbook Harness release notes
 
+## Legacy evaluator retirement — 2026-08-09
+
+The old provider-specific evaluator has been retired before work begins on its
+replacement. Removed material includes its worker, queue, campaign and judge
+scripts; executable cases; stored run trees; hidden `PLAYBOOK_EVAL_CONFIG`
+branches in task templates and hooks; and two tests that only described that
+architecture.
+
+The removal does not discard what was learned. `docs/eval-history.md` preserves
+the campaigns' bounded conclusions, reusable case/rubric practices, provenance,
+confounds, and superseded assumptions. Raw artifacts remain recoverable from
+the development repository's Git history. Historical task and chat records are
+unchanged and are not presented as a current test lane.
+
+The public artifact audit now rejects retired evaluator runtime tokens. The
+replacement is planned separately in `docs/eval-system-plan.md`: first ship a
+general tmux execution substrate, then build Git-pinned historical cases and an
+interactive arena on top.
+
 ## Testing and culture skills — 2026-08-09
 
 This release adds two related but deliberately separate skills:

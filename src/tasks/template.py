@@ -742,31 +742,17 @@ def render_template(num: int, title: str, task_type: str | None = None) -> str:
     pattern_name = PLAYBOOKS.get(task_type) if task_type else None
     playbook_ref = f"playbook/{pattern_name}" if pattern_name else "(none)"
 
-    # --- Eval mode: read template flags from PLAYBOOK_EVAL_CONFIG ---
-    import os as _os
-    _eval_cfg = {}
-    _eval_config_path = _os.environ.get("PLAYBOOK_EVAL_CONFIG", "")
-    if _eval_config_path:
-        try:
-            import json as _json
-            _eval_cfg = _json.loads(open(_eval_config_path).read())
-        except Exception:
-            pass
-
     # Common parts shared by all variants
     common_start = [
         header(num, title),
+        sticker(),
     ]
-    if _eval_cfg.get("sticker", "on") != "off":
-        common_start.append(sticker())
     common_start += [
         status(),
         intent_why_refs(playbook_ref),
     ]
-    common_end = []
-    if _eval_cfg.get("debrief", "on") != "off":
-        common_end.append(debrief())
-    common_end += [
+    common_end = [
+        debrief(),
         pre_review(),
         parked(),
         standing_orders(),
@@ -789,14 +775,12 @@ def render_template(num: int, title: str, task_type: str | None = None) -> str:
         ]
     else:
         # Build (default) — full ceremony
-        middle = []
-        if _eval_cfg.get("design_phase", "on") != "off":
-            middle.append(design_phase())
-        if _eval_cfg.get("judge", "on") != "off":
-            middle.append(judge_section())
-        middle.append(work_plan())
-        if _eval_cfg.get("judge", "on") != "off":
-            middle.append(judge_impl_section())
+        middle = [
+            design_phase(),
+            judge_section(),
+            work_plan(),
+            judge_impl_section(),
+        ]
 
     parts = common_start + middle + common_end
     return "\n\n".join(parts) + "\n"

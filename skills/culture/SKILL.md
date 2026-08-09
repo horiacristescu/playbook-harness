@@ -38,7 +38,8 @@ with a values taxonomy, rubric, or expected conclusions.
 - Read the complete primary history at progressive resolution. Search is an
   omission tool, not a replacement for chronological coverage.
 - Treat `chat_log.md`, historical `task.md` gates and annotations, judge/review
-  artifacts, `MIND_MAP.md`, and its overflow as distinct evidence surfaces.
+  artifacts, `MIND_MAP.md`, prior cultural artifacts, and any retired maps found
+  in history as distinct evidence surfaces.
 - Record candidates before organizing them. Promote items through downstream
   influence, costly correction, repeated rediscovery, generative compression,
   changed practice or belief, or productive unresolved tension—not eloquence or
