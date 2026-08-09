@@ -341,7 +341,7 @@ def run_worker(
         path = f"{paths.runtime / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
         coordinator_src = Path(__file__).resolve().parents[1]
         python_path = os.pathsep.join((str(coordinator_src), str(paths.runtime / "arena/src"), str(paths.runtime / "src")))
-        metadata = tmux.start(name=worker_name, namespace=namespace, state_dir=paths.state_dir, cwd=paths.workspace, agent=campaign.worker_agent, args=arguments, model=campaign.worker_model, environment={"PLAYBOOK_RUNTIME_DIR": str(paths.runtime), "PLAYBOOK_ARENA_PACKET": str(paths.packet), "PYTHONPATH": python_path, "PATH": path})
+        metadata = tmux.start(name=worker_name, namespace=namespace, state_dir=paths.state_dir, cwd=paths.workspace, agent=campaign.worker_agent, args=arguments, model=campaign.worker_model, environment={"PLAYBOOK_RUNTIME_DIR": str(paths.runtime), "PLAYBOOK_ARENA_PACKET": str(paths.packet), "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": python_path, "PATH": path})
         started = True
         store.append("worker_started", {"transport": {key: metadata.get(key) for key in ("namespace", "name", "tmux_session", "agent", "model", "command")}}, state="controlling")
         return _control_and_collect(store=store, campaign=campaign, script=script, rubric=rubric, run_id=run_id, paths=paths, transport=tmux, control_deadline_epoch=control_deadline_epoch, started_epoch=recovery["started_epoch"], poll_seconds=poll_seconds)

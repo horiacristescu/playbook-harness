@@ -102,7 +102,7 @@ def run_judges(store: RunStore, campaign: CampaignDefinition, rubric: RubricDefi
             store.append("judge_started", {"judge_id": judge.id, "argv": argv}, state="judging")
             coordinator_src = Path(__file__).resolve().parents[1]
             python_path = os.pathsep.join((str(coordinator_src), str(runtime / "arena/src"), str(runtime / "src")))
-            environment = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": python_path, "LC_ALL": "C", "LANG": "C", "PLAYBOOK_ARENA_PACKET": str(packet)}
+            environment = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": python_path, "PYTHONDONTWRITEBYTECODE": "1", "LC_ALL": "C", "LANG": "C", "PLAYBOOK_ARENA_PACKET": str(packet)}
             completed = run_bounded(argv, cwd=private, env=environment, timeout=campaign.limits["wall_seconds"], per_stream_limit=campaign.limits["max_output_bytes"])
             returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
             if completed.environment_error is not None:

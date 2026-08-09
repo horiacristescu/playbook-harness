@@ -38,7 +38,7 @@ def run_deterministic_checks(
     results = []
     per_stream_limit = max(1, campaign.limits["max_output_bytes"] // 2)
     python_path = os.pathsep.join((str(runtime / "arena/src"), str(runtime / "src")))
-    environment = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": python_path, "PLAYBOOK_RUNTIME_DIR": str(runtime), "PLAYBOOK_ARENA_PACKET": str(packet), "LC_ALL": "C", "LANG": "C"}
+    environment = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": python_path, "PYTHONDONTWRITEBYTECODE": "1", "PLAYBOOK_RUNTIME_DIR": str(runtime), "PLAYBOOK_ARENA_PACKET": str(packet), "LC_ALL": "C", "LANG": "C"}
     for check in campaign.checks:
         argv = _expanded(check.argv, workspace=workspace, runtime=runtime, packet=packet)
         store.append("check_started", {"check_id": check.id, "argv": argv, "timeout_seconds": check.timeout_seconds}, state="checking")
