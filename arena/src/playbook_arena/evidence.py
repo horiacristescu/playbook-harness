@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 import time
 from pathlib import Path
 from typing import Any, Sequence
 
 from .case import ArenaCaseError
+from .process import run_bounded
 from .schema import CampaignDefinition, canonical_json
 from .store import RunStore
 
@@ -47,24 +47,29 @@ def run_deterministic_checks(
         exit_status: int | None
         stdout = b""
         stderr = b""
-        try:
-            completed = subprocess.run(argv, cwd=workspace, env=environment, capture_output=True, timeout=check.timeout_seconds, check=False)
-            exit_status = completed.returncode
-            stdout, stderr = completed.stdout, completed.stderr
-            passed = exit_status == 0
-        except subprocess.TimeoutExpired as exc:
-            status = "timeout"
-            exit_status = None
-            stdout = exc.stdout or b""
-            stderr = exc.stderr or b""
-            passed = False
-        except OSError as exc:
+        completed = run_bounded(argv, cwd=workspace, env=environment, timeout=check.timeout_seconds, per_stream_limit=per_stream_limit)
+        stdout, stderr = completed.stdout, completed.stderr
+        exit_status = completed.returncode
+        if completed.environment_error is not None:
             status = "environment_failure"
             exit_status = None
-            stderr = str(exc).encode("utf-8", errors="replace")
+            stderr = completed.environment_error.encode("utf-8", errors="replace")
             passed = False
+        elif completed.timed_out:
+            status = "timeout"
+            exit_status = None
+            passed = False
+        elif completed.stdout_overflow or completed.stderr_overflow:
+            status = "output_limit"
+            passed = False
+        else:
+            passed = exit_status == 0
         retained_stdout, stdout_meta = _bounded(stdout, per_stream_limit)
         retained_stderr, stderr_meta = _bounded(stderr, per_stream_limit)
+        if completed.stdout_overflow:
+            stdout_meta.update({"truncated": True, "bytes": None, "sha256": None, "retained_bytes": len(retained_stdout)})
+        if completed.stderr_overflow:
+            stderr_meta.update({"truncated": True, "bytes": None, "sha256": None, "retained_bytes": len(retained_stderr)})
         stdout_path = evidence_dir / f"{check.id}.stdout"
         stderr_path = evidence_dir / f"{check.id}.stderr"
         stdout_path.write_bytes(retained_stdout)

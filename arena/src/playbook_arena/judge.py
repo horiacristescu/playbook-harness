@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import tempfile
 import time
 from collections import Counter
@@ -13,6 +12,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .case import ArenaCaseError
+from .process import run_bounded
 from .schema import CampaignDefinition, JudgeCommand, RubricDefinition, canonical_json
 from .store import RunStore
 
@@ -103,25 +103,23 @@ def run_judges(store: RunStore, campaign: CampaignDefinition, rubric: RubricDefi
             coordinator_src = Path(__file__).resolve().parents[1]
             python_path = os.pathsep.join((str(coordinator_src), str(runtime / "arena/src"), str(runtime / "src")))
             environment = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": python_path, "LC_ALL": "C", "LANG": "C", "PLAYBOOK_ARENA_PACKET": str(packet)}
-            try:
-                completed = subprocess.run(argv, cwd=private, env=environment, capture_output=True, timeout=campaign.limits["wall_seconds"], check=False)
-                returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
-                if returncode != 0:
-                    error = f"judge exited {returncode}"
-                elif len(stdout) > campaign.limits["max_output_bytes"] or len(stderr) > campaign.limits["max_output_bytes"]:
-                    error = "judge output exceeded frozen limit"
-                else:
-                    try:
-                        value = json.loads(stdout.decode("utf-8"))
-                        claims = _validate_output(value, judge_id=judge.id, rubric=rubric, citations=citations)
-                        status = "scored"
-                    except (UnicodeError, json.JSONDecodeError, ArenaCaseError) as exc:
-                        error = str(exc)
-            except subprocess.TimeoutExpired as exc:
-                stdout, stderr = exc.stdout or b"", exc.stderr or b""
+            completed = run_bounded(argv, cwd=private, env=environment, timeout=campaign.limits["wall_seconds"], per_stream_limit=campaign.limits["max_output_bytes"])
+            returncode, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
+            if completed.environment_error is not None:
+                error = f"judge environment failure: {completed.environment_error}"
+            elif completed.timed_out:
                 error = "judge timed out"
-            except OSError as exc:
-                error = f"judge environment failure: {exc}"
+            elif completed.stdout_overflow or completed.stderr_overflow:
+                error = "judge output exceeded frozen limit"
+            elif returncode != 0:
+                error = f"judge exited {returncode}"
+            else:
+                try:
+                    value = json.loads(stdout.decode("utf-8"))
+                    claims = _validate_output(value, judge_id=judge.id, rubric=rubric, citations=citations)
+                    status = "scored"
+                except (UnicodeError, json.JSONDecodeError, ArenaCaseError) as exc:
+                    error = str(exc)
             raw_path = private / "raw.stdout"
             raw_path.write_bytes(stdout[: campaign.limits["max_output_bytes"]])
             err_path = private / "raw.stderr"

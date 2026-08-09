@@ -17,7 +17,7 @@ from .case import ArenaCaseError, CaseDefinition
 from .controller import decide, record_decision, record_send_failure, record_sent, replay_controller
 from .evidence import run_deterministic_checks
 from .judge import aggregate_judgments, run_judges
-from .prepare import prepare_case
+from .prepare import MAX_WORKSPACE_FILE_BYTES, MAX_WORKSPACE_TOTAL_BYTES, prepare_case
 from .schema import CampaignDefinition, RubricDefinition, ScriptDefinition, VariantDefinition, canonical_json
 from .store import RunStore
 from .variant import prepare_variant_runtime
@@ -99,6 +99,7 @@ def _expanded(argv: Sequence[str], *, workspace: Path, runtime: Path, packet: Pa
 
 def _workspace_manifest(root: Path) -> list[dict[str, Any]]:
     values = []
+    total = 0
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
         if path.is_symlink():
@@ -107,7 +108,15 @@ def _workspace_manifest(root: Path) -> list[dict[str, Any]]:
             continue
         if not path.is_file():
             raise ArenaCaseError(f"worker workspace contains a special file: {relative}")
+        size = path.stat().st_size
+        if size > MAX_WORKSPACE_FILE_BYTES:
+            raise ArenaCaseError(f"worker workspace file is too large: {relative}")
+        total += size
+        if len(values) >= 10_000 or total > MAX_WORKSPACE_TOTAL_BYTES:
+            raise ArenaCaseError("worker workspace exceeds file-count or total-byte limit")
         data = path.read_bytes()
+        if len(data) != size:
+            raise ArenaCaseError(f"worker workspace changed during evidence capture: {relative}")
         values.append({"path": relative, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "executable": bool(path.stat().st_mode & 0o111)})
     return values
 
@@ -143,6 +152,151 @@ def run_identity(campaign: CampaignDefinition, variant: VariantDefinition, *, ar
     return f"{campaign.id}-{digest[:16]}", {**identity, "identity_sha256": digest}
 
 
+@dataclass(frozen=True)
+class RecoveryPaths:
+    private: Path
+    workspace: Path
+    baseline: Path
+    runtime: Path
+    state_dir: Path
+    packet: Path
+    check_workspace: Path
+    check_evidence: Path
+
+
+def _recovery_paths(private: Path) -> RecoveryPaths:
+    return RecoveryPaths(private, private / "workspace", private / "baseline", private / "runtime", private / "tmux", private / "worker-packet.json", private / "check-workspace", private / "check-evidence")
+
+
+def _write_recovery(store: RunStore, *, run_id: str, identity: Mapping[str, Any], private: Path, control_deadline_epoch: float) -> None:
+    value = {"schema": 1, "run_id": run_id, "identity_sha256": identity["identity_sha256"], "private": str(private.resolve()), "started_epoch": time.time(), "control_deadline_epoch": control_deadline_epoch}
+    encoded = canonical_json(value) + b"\n"
+    path = store.root / "recovery.json"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags, 0o600)
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(fd, encoded[offset:])
+            if written <= 0:
+                raise ArenaCaseError("short write while recording recovery identity")
+            offset += written
+        os.fsync(fd)
+    finally:
+        if "fd" in locals():
+            os.close(fd)
+    store.append("recovery_recorded", {"sha256": hashlib.sha256(encoded).hexdigest()}, state="preparing")
+
+
+def _load_recovery(store: RunStore, *, run_id: str, identity: Mapping[str, Any]) -> tuple[RecoveryPaths, dict[str, Any]]:
+    path = store.root / "recovery.json"
+    if path.is_symlink() or not path.is_file():
+        raise ArenaCaseError("run recovery identity is missing or not regular")
+    data = path.read_bytes()
+    records = [event.payload.get("sha256") for event in store.verify() if event.type == "recovery_recorded"]
+    if records != [hashlib.sha256(data).hexdigest()]:
+        raise ArenaCaseError("run recovery identity hash mismatch")
+    try:
+        value = json.loads(data.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ArenaCaseError(f"run recovery identity is invalid: {exc}") from exc
+    if not isinstance(value, dict) or set(value) != {"schema", "run_id", "identity_sha256", "private", "started_epoch", "control_deadline_epoch"} or value["schema"] != 1 or value["run_id"] != run_id or value["identity_sha256"] != identity["identity_sha256"]:
+        raise ArenaCaseError("run recovery identity does not match frozen assignment")
+    if not isinstance(value["started_epoch"], (int, float)) or not isinstance(value["control_deadline_epoch"], (int, float)):
+        raise ArenaCaseError("run recovery deadlines are invalid")
+    private = Path(value["private"])
+    if private.is_symlink() or not private.is_dir() or private.resolve() != private:
+        raise ArenaCaseError("run private recovery root is unavailable")
+    paths = _recovery_paths(private)
+    for required in (paths.workspace, paths.baseline, paths.runtime, paths.state_dir, paths.packet):
+        if required.is_symlink() or not required.exists():
+            raise ArenaCaseError(f"run recovery component is unavailable: {required.name}")
+    return paths, value
+
+
+def _control_and_collect(
+    *,
+    store: RunStore,
+    campaign: CampaignDefinition,
+    script: ScriptDefinition,
+    rubric: RubricDefinition,
+    run_id: str,
+    paths: RecoveryPaths,
+    transport: TmuxTransport,
+    control_deadline_epoch: float,
+    started_epoch: float,
+    poll_seconds: float,
+) -> RunOutcome:
+    namespace = campaign.id
+    worker_name = hashlib.sha256(run_id.encode()).hexdigest()[:16]
+    worker_state = "unknown"
+    prior_log = ""
+    while True:
+        status = transport.status(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
+        worker_state = str(status.get("state", "unknown"))
+        current_log = transport.log(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
+        if not current_log.startswith(prior_log):
+            raise ArenaCaseError("tmux terminal log is not append-only")
+        if len(current_log.encode("utf-8")) > campaign.limits["max_output_bytes"]:
+            raise ArenaCaseError("worker output exceeded frozen limit")
+        controller = replay_controller(script, store.verify())
+        new_output = current_log[controller.output_offset:] if controller.delivery_sent else ""
+        timed_out = controller.acknowledgment_deadline_epoch is not None and time.time() >= controller.acknowledgment_deadline_epoch
+        decision = decide(script, controller, worker_state=worker_state, new_output=new_output, timed_out=timed_out)
+        if decision.action == "deliver":
+            if sum(event.type == "delivery_requested" for event in store.verify()) >= campaign.limits["max_interventions"]:
+                raise ArenaCaseError("controller intervention limit reached")
+            record_decision(store, script, decision)
+            output_offset = len(current_log)
+            try:
+                transport.send(name=worker_name, namespace=namespace, state_dir=paths.state_dir, message=script.events[controller.next_index].message)
+            except Exception as exc:
+                record_send_failure(store, script, str(decision.event_id), str(exc))
+                raise
+            deadline = time.time() + script.events[controller.next_index].timeout_seconds
+            record_sent(store, script, str(decision.event_id), output_offset=output_offset, acknowledgment_deadline_epoch=deadline)
+        elif decision.action in {"acknowledge", "skip", "stop", "fail"}:
+            record_decision(store, script, decision)
+            if decision.action in {"stop", "fail"}:
+                break
+        elif decision.action == "complete" and worker_state in {"completed", "failed", "stopped", "lost"}:
+            break
+        if time.time() >= control_deadline_epoch:
+            store.append("wall_timeout", {"wall_seconds": campaign.limits["wall_seconds"]}, state="stopping")
+            break
+        prior_log = current_log
+        time.sleep(poll_seconds)
+    status = transport.status(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
+    worker_state = str(status.get("state", "unknown"))
+    if worker_state not in {"completed", "failed", "stopped", "lost"}:
+        transport.stop(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
+        worker_state = str(transport.status(name=worker_name, namespace=namespace, state_dir=paths.state_dir).get("state", "unknown"))
+    terminal = transport.log(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
+    terminal_path = paths.private / "terminal.log"
+    terminal_path.write_text(terminal, encoding="utf-8")
+    store.record_artifact(terminal_path, "worker/terminal.log", kind="terminal", state="collecting")
+    result = transport.result(name=worker_name, namespace=namespace, state_dir=paths.state_dir) if worker_state != "lost" else status
+    result_path = paths.private / "tmux-result.json"
+    result_path.write_bytes(canonical_json(result) + b"\n")
+    store.record_artifact(result_path, "worker/tmux-result.json", kind="transport", state="collecting")
+    _write_workspace_evidence(store, private=paths.private, baseline=paths.baseline, workspace=paths.workspace, output_limit=campaign.limits["max_output_bytes"])
+    if worker_state != "lost":
+        transport.stop(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
+    shutil.copytree(paths.workspace, paths.check_workspace, symlinks=True)
+    paths.check_evidence.mkdir()
+    check_results = run_deterministic_checks(store, campaign, workspace=paths.check_workspace, runtime=paths.runtime, packet=paths.packet, evidence_dir=paths.check_evidence)
+    judgments = run_judges(store, campaign, rubric, opaque_run_id=run_id, runtime=paths.runtime)
+    judgment_summary = aggregate_judgments(rubric, judgments)
+    judgment_path = paths.private / "judgment-summary.json"
+    judgment_path.write_bytes(canonical_json({"schema": 1, "criteria": judgment_summary}) + b"\n")
+    store.record_artifact(judgment_path, "judges/summary.json", kind="judgment-summary", state="collecting")
+    final_state = "completed" if worker_state == "completed" and replay_controller(script, store.verify()).next_index == len(script.events) else "failed"
+    final_events = store.verify()
+    store.append("run_finished", {"worker_state": worker_state, "controller_state": replay_controller(script, final_events).terminal, "checks_passed": sum(bool(item["passed"]) for item in check_results), "checks_failed": sum(not bool(item["passed"]) for item in check_results), "judges_scored": sum(item["status"] == "scored" for item in judgments), "judges_unscorable": sum(item["status"] != "scored" for item in judgments), "interventions": sum(event.type == "delivery_requested" for event in final_events), "deviations": sum(event.type in {"script_event_skipped", "controller_failed", "controller_stopped"} for event in final_events), "duration_ms": round((time.time() - started_epoch) * 1000)}, state=final_state)
+    store.verify_artifacts()
+    return RunOutcome(run_id, store.root, final_state, worker_state)
+
+
 def run_worker(
     *,
     campaign: CampaignDefinition,
@@ -165,104 +319,32 @@ def run_worker(
     tmux = TmuxTransport() if transport is None else transport
     results = Path(results_root).expanduser()
     results.mkdir(parents=True, mode=0o700, exist_ok=True)
-    private = Path(tempfile.mkdtemp(prefix="pb-arena-run-"))
-    workspace = private / "workspace"
-    baseline = private / "baseline"
-    runtime = private / "runtime"
-    state_dir = private / "tmux"
-    packet = private / "worker-packet.json"
-    check_workspace = private / "check-workspace"
-    check_evidence = private / "check-evidence"
+    private = Path(tempfile.mkdtemp(prefix="pb-arena-run-")).resolve()
+    paths = _recovery_paths(private)
     namespace = campaign.id
     worker_name = hashlib.sha256(run_id.encode()).hexdigest()[:16]
     started = False
     worker_state = "not_started"
     store: RunStore | None = None
-    run_started_at = time.monotonic()
+    control_deadline_epoch = time.time() + campaign.limits["wall_seconds"]
     try:
         store = RunStore.reserve(results, run_id, identity)
-        prepared = prepare_case(case, workspace, sources=sources, corpus=corpus)
+        _write_recovery(store, run_id=run_id, identity=identity, private=private, control_deadline_epoch=control_deadline_epoch)
+        recovery = json.loads((store.root / "recovery.json").read_text(encoding="utf-8"))
+        prepared = prepare_case(case, paths.workspace, sources=sources, corpus=corpus)
         store.append("case_prepared", prepared, state="preparing")
-        shutil.copytree(workspace, baseline, symlinks=True)
-        runtime_result = prepare_variant_runtime(variant, runtime_repo, runtime)
+        shutil.copytree(paths.workspace, paths.baseline, symlinks=True)
+        runtime_result = prepare_variant_runtime(variant, runtime_repo, paths.runtime)
         store.append("variant_prepared", {**runtime_result, "arm_id": arm_id}, state="preparing")
-        packet.write_bytes(canonical_json({"schema": 1, "case_id": case.id}) + b"\n")
-        arguments = _expanded(campaign.worker_args, workspace=workspace, runtime=runtime, packet=packet)
-        path = f"{runtime / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
+        paths.packet.write_bytes(canonical_json({"schema": 1, "case_id": case.id}) + b"\n")
+        arguments = _expanded(campaign.worker_args, workspace=paths.workspace, runtime=paths.runtime, packet=paths.packet)
+        path = f"{paths.runtime / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
         coordinator_src = Path(__file__).resolve().parents[1]
-        python_path = os.pathsep.join((str(coordinator_src), str(runtime / "arena/src"), str(runtime / "src")))
-        metadata = tmux.start(name=worker_name, namespace=namespace, state_dir=state_dir, cwd=workspace, agent=campaign.worker_agent, args=arguments, model=campaign.worker_model, environment={"PLAYBOOK_RUNTIME_DIR": str(runtime), "PLAYBOOK_ARENA_PACKET": str(packet), "PYTHONPATH": python_path, "PATH": path})
+        python_path = os.pathsep.join((str(coordinator_src), str(paths.runtime / "arena/src"), str(paths.runtime / "src")))
+        metadata = tmux.start(name=worker_name, namespace=namespace, state_dir=paths.state_dir, cwd=paths.workspace, agent=campaign.worker_agent, args=arguments, model=campaign.worker_model, environment={"PLAYBOOK_RUNTIME_DIR": str(paths.runtime), "PLAYBOOK_ARENA_PACKET": str(paths.packet), "PYTHONPATH": python_path, "PATH": path})
         started = True
         store.append("worker_started", {"transport": {key: metadata.get(key) for key in ("namespace", "name", "tmux_session", "agent", "model", "command")}}, state="controlling")
-        deadline = time.monotonic() + campaign.limits["wall_seconds"]
-        ack_deadline: float | None = None
-        prior_log = ""
-        while True:
-            status = tmux.status(name=worker_name, namespace=namespace, state_dir=state_dir)
-            worker_state = str(status.get("state", "unknown"))
-            current_log = tmux.log(name=worker_name, namespace=namespace, state_dir=state_dir)
-            if not current_log.startswith(prior_log):
-                raise ArenaCaseError("tmux terminal log is not append-only")
-            if len(current_log.encode("utf-8")) > campaign.limits["max_output_bytes"]:
-                raise ArenaCaseError("worker output exceeded frozen limit")
-            controller = replay_controller(script, store.verify())
-            new_output = current_log[controller.output_offset:] if controller.delivery_sent else ""
-            timed_out = ack_deadline is not None and time.monotonic() >= ack_deadline
-            decision = decide(script, controller, worker_state=worker_state, new_output=new_output, timed_out=timed_out)
-            if decision.action == "deliver":
-                if sum(event.type == "delivery_requested" for event in store.verify()) >= campaign.limits["max_interventions"]:
-                    raise ArenaCaseError("controller intervention limit reached")
-                record_decision(store, script, decision)
-                output_offset = len(current_log)
-                try:
-                    tmux.send(name=worker_name, namespace=namespace, state_dir=state_dir, message=script.events[controller.next_index].message)
-                except Exception as exc:
-                    record_send_failure(store, script, str(decision.event_id), str(exc))
-                    raise
-                record_sent(store, script, str(decision.event_id), output_offset=output_offset)
-                ack_deadline = time.monotonic() + script.events[controller.next_index].timeout_seconds
-            elif decision.action in {"acknowledge", "skip"}:
-                record_decision(store, script, decision)
-                ack_deadline = None
-            elif decision.action in {"stop", "fail"}:
-                record_decision(store, script, decision)
-                break
-            elif decision.action == "complete" and worker_state in {"completed", "failed", "stopped", "lost"}:
-                break
-            if time.monotonic() >= deadline:
-                store.append("wall_timeout", {"wall_seconds": campaign.limits["wall_seconds"]}, state="stopping")
-                break
-            prior_log = current_log
-            time.sleep(poll_seconds)
-        status = tmux.status(name=worker_name, namespace=namespace, state_dir=state_dir)
-        worker_state = str(status.get("state", "unknown"))
-        if worker_state not in {"completed", "failed", "stopped", "lost"}:
-            tmux.stop(name=worker_name, namespace=namespace, state_dir=state_dir)
-            worker_state = str(tmux.status(name=worker_name, namespace=namespace, state_dir=state_dir).get("state", "unknown"))
-        terminal = tmux.log(name=worker_name, namespace=namespace, state_dir=state_dir)
-        terminal_path = private / "terminal.log"
-        terminal_path.write_text(terminal, encoding="utf-8")
-        store.record_artifact(terminal_path, "worker/terminal.log", kind="terminal", state="collecting")
-        result = tmux.result(name=worker_name, namespace=namespace, state_dir=state_dir) if worker_state != "lost" else status
-        result_path = private / "tmux-result.json"
-        result_path.write_bytes(canonical_json(result) + b"\n")
-        store.record_artifact(result_path, "worker/tmux-result.json", kind="transport", state="collecting")
-        _write_workspace_evidence(store, private=private, baseline=baseline, workspace=workspace, output_limit=campaign.limits["max_output_bytes"])
-        if worker_state != "lost":
-            tmux.stop(name=worker_name, namespace=namespace, state_dir=state_dir)
-        shutil.copytree(workspace, check_workspace, symlinks=True)
-        check_evidence.mkdir()
-        check_results = run_deterministic_checks(store, campaign, workspace=check_workspace, runtime=runtime, packet=packet, evidence_dir=check_evidence)
-        judgments = run_judges(store, campaign, rubric, opaque_run_id=run_id, runtime=runtime)
-        judgment_summary = aggregate_judgments(rubric, judgments)
-        judgment_path = private / "judgment-summary.json"
-        judgment_path.write_bytes(canonical_json({"schema": 1, "criteria": judgment_summary}) + b"\n")
-        store.record_artifact(judgment_path, "judges/summary.json", kind="judgment-summary", state="collecting")
-        final_state = "completed" if worker_state == "completed" and replay_controller(script, store.verify()).next_index == len(script.events) else "failed"
-        final_events = store.verify()
-        store.append("run_finished", {"worker_state": worker_state, "controller_state": replay_controller(script, final_events).terminal, "checks_passed": sum(bool(item["passed"]) for item in check_results), "checks_failed": sum(not bool(item["passed"]) for item in check_results), "judges_scored": sum(item["status"] == "scored" for item in judgments), "judges_unscorable": sum(item["status"] != "scored" for item in judgments), "interventions": sum(event.type == "delivery_requested" for event in final_events), "deviations": sum(event.type in {"script_event_skipped", "controller_failed", "controller_stopped"} for event in final_events), "duration_ms": round((time.monotonic() - run_started_at) * 1000)}, state=final_state)
-        store.verify_artifacts()
-        return RunOutcome(run_id, store.root, final_state, worker_state)
+        return _control_and_collect(store=store, campaign=campaign, script=script, rubric=rubric, run_id=run_id, paths=paths, transport=tmux, control_deadline_epoch=control_deadline_epoch, started_epoch=recovery["started_epoch"], poll_seconds=poll_seconds)
     except Exception as exc:
         if store is not None:
             try:
@@ -273,11 +355,52 @@ def run_worker(
     finally:
         if started:
             try:
-                status = tmux.status(name=worker_name, namespace=namespace, state_dir=state_dir)
+                status = tmux.status(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
                 if status.get("state") != "lost":
-                    tmux.stop(name=worker_name, namespace=namespace, state_dir=state_dir)
+                    tmux.stop(name=worker_name, namespace=namespace, state_dir=paths.state_dir)
             except Exception:
                 pass
         if store is not None:
             store.close()
         shutil.rmtree(private, ignore_errors=True)
+
+
+def resume_worker(
+    *,
+    campaign: CampaignDefinition,
+    script: ScriptDefinition,
+    rubric: RubricDefinition,
+    variant: VariantDefinition,
+    arm_id: str,
+    repetition: int,
+    results_root: str | Path,
+    transport: TmuxTransport | None = None,
+    poll_seconds: float = 0.05,
+) -> RunOutcome:
+    run_id, identity = run_identity(campaign, variant, arm_id=arm_id, repetition=repetition)
+    store = RunStore.resume(Path(results_root) / run_id)
+    tmux = TmuxTransport() if transport is None else transport
+    paths: RecoveryPaths | None = None
+    try:
+        events = store.verify()
+        if any(event.type in {"run_error", "artifact_recorded", "check_started", "judge_started", "run_finished"} for event in events):
+            raise ArenaCaseError("run is not in the resumable control phase")
+        paths, recovery = _load_recovery(store, run_id=run_id, identity=identity)
+        return _control_and_collect(store=store, campaign=campaign, script=script, rubric=rubric, run_id=run_id, paths=paths, transport=tmux, control_deadline_epoch=recovery["control_deadline_epoch"], started_epoch=recovery["started_epoch"], poll_seconds=poll_seconds)
+    except Exception as exc:
+        try:
+            store.append("run_error", {"error": str(exc), "worker_state": "recovery"}, state="failed")
+        except Exception:
+            pass
+        raise
+    finally:
+        if paths is not None:
+            worker_name = hashlib.sha256(run_id.encode()).hexdigest()[:16]
+            try:
+                status = tmux.status(name=worker_name, namespace=campaign.id, state_dir=paths.state_dir)
+                if status.get("state") != "lost":
+                    tmux.stop(name=worker_name, namespace=campaign.id, state_dir=paths.state_dir)
+            except Exception:
+                pass
+            shutil.rmtree(paths.private, ignore_errors=True)
+        store.close()

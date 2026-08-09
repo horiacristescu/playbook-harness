@@ -15,7 +15,7 @@
     {
       "destination": "arena/README.md",
       "mode": "0644",
-      "sha256": "1c6e97dcb886ef97ceddbbebe2144c0b967db67b6c2534bf9f7857b380d8bf97",
+      "sha256": "cc0c66e46e4861dc61ecfd00e79c0c873d4c408fa5a1165a1801dc93de173433",
       "source": "arena/README.md"
     },
     {
@@ -93,13 +93,13 @@
     {
       "destination": "arena/src/playbook_arena/analyze.py",
       "mode": "0644",
-      "sha256": "5476ab0a1ad422ab0f3966b68a84223b207aa58d7bac30e1773244609ecc419f",
+      "sha256": "09405c2bbadb93b0e1e223efcbb19e85b2bc30b5109133ebad45526d24f0a5fd",
       "source": "arena/src/playbook_arena/analyze.py"
     },
     {
       "destination": "arena/src/playbook_arena/campaign.py",
       "mode": "0644",
-      "sha256": "89ba95c6c088cd66e36fa11713d792b9a985f6cabf57d71bfca9fdc740d5feec",
+      "sha256": "023c94f6a84711940a977f8d450312b24fea4f336db12c427046459928ab71c0",
       "source": "arena/src/playbook_arena/campaign.py"
     },
     {
@@ -129,13 +129,13 @@
     {
       "destination": "arena/src/playbook_arena/controller.py",
       "mode": "0644",
-      "sha256": "d88078ae82db8c10285b7adf4ed0f79dc4a6ebcbe82b687fc6ea1977b2805902",
+      "sha256": "4325ddda6f3c0b3f44ca9f096f2e4b932cbaf77e84c93fe9eab1d1b1d0fdbf60",
       "source": "arena/src/playbook_arena/controller.py"
     },
     {
       "destination": "arena/src/playbook_arena/evidence.py",
       "mode": "0644",
-      "sha256": "cfe4d02cf53fdd753e4fe2931a538991a52097ca14700b088e6750b4ad4a21ee",
+      "sha256": "d38dc5fff85596c6d390fc497dd5ff6341964cf9d7554045878906fe7c71d75b",
       "source": "arena/src/playbook_arena/evidence.py"
     },
     {
@@ -147,7 +147,7 @@
     {
       "destination": "arena/src/playbook_arena/judge.py",
       "mode": "0644",
-      "sha256": "488b38edba854dfbc63a934c2c668b3158842283ce8917aa82693ba07862535a",
+      "sha256": "10161934a70ad969078d2bbb875630142136a3e6958811573eed20e34c4197ea",
       "source": "arena/src/playbook_arena/judge.py"
     },
     {
@@ -157,9 +157,15 @@
       "source": "arena/src/playbook_arena/prepare.py"
     },
     {
+      "destination": "arena/src/playbook_arena/process.py",
+      "mode": "0644",
+      "sha256": "18aaa1054b91bebe43c82f2bb6eadad3d924bda21f714db8b531af91522fc13e",
+      "source": "arena/src/playbook_arena/process.py"
+    },
+    {
       "destination": "arena/src/playbook_arena/run.py",
       "mode": "0644",
-      "sha256": "b21e6393ced38062d31ac39d2f05f30650330b91c9ed19f73ec37c7b953b5298",
+      "sha256": "14862849c366b48bf3c1c1488530a1db14f9d997bd04f46abc671e1058bbc29f",
       "source": "arena/src/playbook_arena/run.py"
     },
     {

@@ -53,6 +53,11 @@ runs frozen checks after worker termination, gives independent command judges co
 packets, and writes an immutable `ADOPT`, `REJECT`, or `RETEST` report. Results are
 append-only and caller-retained; an identity is never cleared for a rerun.
 
+If the coordinator is interrupted during the tmux control phase, rerunning the frozen
+campaign verifies its durable identity and reconnects without repeating a recorded send.
+An ambiguous send or an interruption after evidence collection begins fails visibly;
+partial campaigns remain resumable evidence and do not receive a final report.
+
 The shipped network-free mechanics canary is:
 
 ```bash
@@ -73,7 +78,8 @@ or historical conversation replay.
 - Tmux exposes transport state only. The controller never infers questions, quiescence,
   correctness, or semantic completion from pane prose.
 - Campaign argv is executable authority supplied by the author. Inspect it before run.
-  Private temp directories, minimal environments, timeouts, and output bounds are
+  Private temp directories, minimal environments, timeouts, pre-read workspace limits,
+  and file-backed subprocess output bounds are
   containment hygiene, not a command sandbox.
 - Real provider workers or judges may transmit project evidence and cost money. Nothing
   discovers credentials or launches them implicitly; the shipped canary is local Python.

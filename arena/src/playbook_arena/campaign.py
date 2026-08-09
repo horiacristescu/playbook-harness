@@ -82,7 +82,12 @@ def _exclusive_json(path: Path, value: Any) -> None:
     except OSError as exc:
         raise ArenaCaseError(f"cannot freeze campaign file {path}: {exc}") from exc
     try:
-        os.write(fd, encoded)
+        offset = 0
+        while offset < len(encoded):
+            written = os.write(fd, encoded[offset:])
+            if written <= 0:
+                raise ArenaCaseError("short write while freezing campaign")
+            offset += written
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -180,7 +185,7 @@ def execute_campaign(
 ) -> dict[str, Any]:
     from .analyze import analyze_campaign, write_report
     from .case import discover_cases
-    from .run import run_identity, run_worker
+    from .run import resume_worker, run_identity, run_worker
     from .store import RunStore
 
     cases = {case.id: case for case in discover_cases(cases_root)}
@@ -196,12 +201,17 @@ def execute_campaign(
         if run_root.exists():
             try:
                 with RunStore.read_only(run_root) as store:
-                    if len([event for event in store.verify() if event.type == "run_finished"]) != 1:
-                        raise ArenaCaseError("existing run is incomplete")
-                outcomes.append({"run_id": run_id, "status": "existing"})
+                    finished = [event for event in store.verify() if event.type == "run_finished"]
+                if len(finished) == 1:
+                    outcomes.append({"run_id": run_id, "status": "existing"})
+                    continue
+                if finished:
+                    raise ArenaCaseError("existing run has duplicate terminal events")
+                outcome = resume_worker(campaign=frozen.definition, script=frozen.script, rubric=frozen.rubric, variant=variant, arm_id=assignment.arm_id, repetition=assignment.repetition, results_root=frozen.root / "runs", transport=transport)
+                outcomes.append({"run_id": outcome.run_id, "status": "resumed"})
                 continue
             except ArenaCaseError as exc:
-                stopped = {"reason": "existing run is invalid", "run_id": run_id, "error": str(exc)}
+                stopped = {"reason": "existing run could not be resumed", "run_id": run_id, "error": str(exc)}
                 break
         try:
             outcome = run_worker(campaign=frozen.definition, case=case, script=frozen.script, rubric=frozen.rubric, variant=variant, arm_id=assignment.arm_id, repetition=assignment.repetition, results_root=frozen.root / "runs", sources=sources, runtime_repo=runtime_repo, corpus=corpus, transport=transport)
@@ -213,9 +223,11 @@ def execute_campaign(
         stop_path = frozen.root / "campaign-stop.json"
         if not stop_path.exists():
             _exclusive_json(stop_path, {"schema": 1, **stopped})
+    if stopped is not None:
+        return {"campaign_id": frozen.definition.id, "outcomes": outcomes, "stopped": stopped, "recommendation": "RETEST", "report": None}
     report_json = frozen.root / "report.json"
     if report_json.exists():
         analysis = json.loads(report_json.read_text(encoding="utf-8"))
     else:
         _, _, analysis = write_report(frozen)
-    return {"campaign_id": frozen.definition.id, "outcomes": outcomes, "stopped": stopped, "recommendation": analysis["recommendation"], "report": str(frozen.root / "report.md")}
+    return {"campaign_id": frozen.definition.id, "outcomes": outcomes, "stopped": None, "recommendation": analysis["recommendation"], "report": str(frozen.root / "report.md")}

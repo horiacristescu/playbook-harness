@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -22,6 +23,7 @@ class ControllerState:
     delivery_requested: bool
     delivery_sent: bool
     output_offset: int
+    acknowledgment_deadline_epoch: float | None
     terminal: str | None
 
 
@@ -39,6 +41,7 @@ def replay_controller(script: ScriptDefinition, events: Iterable[VerifiedEvent])
     requested = False
     sent = False
     output_offset = 0
+    acknowledgment_deadline_epoch: float | None = None
     terminal: str | None = None
     for record in events:
         event_id = record.payload.get("event_id")
@@ -56,23 +59,26 @@ def replay_controller(script: ScriptDefinition, events: Iterable[VerifiedEvent])
             output_offset = record.payload.get("output_offset")
             if type(output_offset) is not int or output_offset < 0:
                 raise ArenaCaseError("controller replay found invalid output offset")
+            acknowledgment_deadline_epoch = record.payload.get("acknowledgment_deadline_epoch")
+            if not isinstance(acknowledgment_deadline_epoch, (int, float)) or acknowledgment_deadline_epoch <= 0:
+                raise ArenaCaseError("controller replay found invalid acknowledgment deadline")
         elif record.type == "delivery_acknowledged":
             if pending != event_id or not sent:
                 raise ArenaCaseError("controller replay found acknowledgment without send")
             next_index += 1
-            pending, requested, sent, output_offset = None, False, False, 0
+            pending, requested, sent, output_offset, acknowledgment_deadline_epoch = None, False, False, 0, None
         elif record.type == "script_event_skipped":
             if terminal or pending not in {None, event_id} or index_by_id[event_id] != next_index:
                 raise ArenaCaseError("controller replay found out-of-order skip")
             next_index += 1
-            pending, requested, sent, output_offset = None, False, False, 0
+            pending, requested, sent, output_offset, acknowledgment_deadline_epoch = None, False, False, 0, None
         elif record.type == "controller_stopped":
             terminal = "stopped"
         elif record.type == "controller_failed":
             terminal = "failed"
     if next_index > len(script.events):
         raise ArenaCaseError("controller replay advanced beyond script")
-    return ControllerState(next_index, pending, requested, sent, output_offset, terminal)
+    return ControllerState(next_index, pending, requested, sent, output_offset, acknowledgment_deadline_epoch, terminal)
 
 
 def decide(
@@ -137,11 +143,11 @@ def record_decision(store: RunStore, script: ScriptDefinition, decision: Control
         raise ArenaCaseError(f"unsupported controller decision: {decision.action}")
 
 
-def record_sent(store: RunStore, script: ScriptDefinition, event_id: str, *, output_offset: int = 0) -> None:
+def record_sent(store: RunStore, script: ScriptDefinition, event_id: str, *, output_offset: int = 0, acknowledgment_deadline_epoch: float | None = None) -> None:
     event = _event(script, event_id)
     store.append(
         "delivery_sent",
-        {"event_id": event.id, "message_sha256": hashlib.sha256(event.message.encode("utf-8")).hexdigest(), "output_offset": output_offset},
+        {"event_id": event.id, "message_sha256": hashlib.sha256(event.message.encode("utf-8")).hexdigest(), "output_offset": output_offset, "acknowledgment_deadline_epoch": acknowledgment_deadline_epoch if acknowledgment_deadline_epoch is not None else time.time() + event.timeout_seconds},
         state="awaiting_ack",
     )
 
