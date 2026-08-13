@@ -571,11 +571,12 @@ Create a new task only when none of those recent tasks honestly matches.
 
 The workflow rule is broader than hook coverage: activate a task before every
 repository code edit. Pre-edit checks cover `apply_patch` on configured code
-paths; shell writes bypass that precheck and can only be detected post-hoc by
-Stop when that hook runs, or physically denied by sandboxing. An active task
-allows repository-wide patches but does not prove that an edit semantically
-belongs to the current gate. Owned task.md patches separately enforce
-one-gate-at-a-time progression.
+paths. Shell writes bypass that precheck and are not attributed by Playbook:
+shared-worktree state cannot prove which session authored them. Only sandbox
+containment can physically deny arbitrary shell writes. An active task allows
+repository-wide patches but does not prove that an edit semantically belongs
+to the current gate. Owned task.md patches separately enforce one-gate-at-a-time
+progression. Stop still enforces unfinished gates for an attributable active task.
 
 ## Working Through a Task
 

@@ -13,9 +13,11 @@ provenance, or task authority.
 Gate completion again uses ordinary provider file edits. Hooks validate that
 only the authoritative first open gate advances, publish the transition, and
 inject the next exact `task.md:line`; the short-lived agent-facing `task-edit`
-command has been removed. Codex task closure now checkpoints authorized edits
-before removing active ownership, preventing same-turn Stop hooks from
-retroactively calling valid work unowned.
+command has been removed. Codex Stop no longer snapshots and compares the
+shared repository to accuse a taskless session of code changes: repository
+state has no session authorship. Attributable `apply_patch` prechecks and
+active-task unfinished-gate Stop checks remain; shell writes are explicitly
+outside Playbook's enforcement boundary unless sandbox containment denies them.
 
 Standalone migration now distinguishes executable Marketplace consumers from
 permission history, archived logs, and independent Claude worktrees. It still

@@ -1,5 +1,5 @@
 {
-  "commit": "a85871aa23ce3fd716a5a1215705d82cb151192d",
+  "commit": "bf3557da23a59e2f407e3ed89b9bbb0d9f9b3018",
   "files": [
     {
       "destination": "LICENSE",
@@ -286,7 +286,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "01a8bb6e79f438de8e7582c9a9b3effad4ec431274339ef9428d595305d5f557",
+      "sha256": "1e75ea1c70da9369d152c206ce30f372c2bb64828b28e7214528678017867eb6",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -340,13 +340,13 @@
     {
       "destination": "scripts/codex-stop-hook",
       "mode": "0755",
-      "sha256": "cd299f1ead611ed132a717533aa97ac59be3bc0eb27a1e2607be6dcacff26f2d",
+      "sha256": "2794f24d91b7a0f241b0a9b288305be249ee288b6f5c8ca4120c989cbf460ccc",
       "source": "scripts/codex-stop-hook"
     },
     {
       "destination": "scripts/codex-user-prompt-hook",
       "mode": "0755",
-      "sha256": "68fdcc9bb35c12484a3e16ea3f8a43a58452c4b83ff46236cb2e99d01121e092",
+      "sha256": "5914782ecb315ae03e690af5cb9594f6a12d99999e965dc57769c5078596e318",
       "source": "scripts/codex-user-prompt-hook"
     },
     {
@@ -616,7 +616,7 @@
     {
       "destination": "src/provider/codex_hooks.py",
       "mode": "0644",
-      "sha256": "dd44bc74338786e102f6ec36f5b1e6ae470695dccf36dc9ab2d0364ad6a24d7b",
+      "sha256": "9c78d19ae3406ae44faae46fe67e65c977fbf63c4be55d29e0c238dc0e1ffc4e",
       "source": "src/provider/codex_hooks.py"
     },
     {
@@ -688,7 +688,7 @@
     {
       "destination": "src/tasks/cli.py",
       "mode": "0644",
-      "sha256": "748f058b7bb57ef1ae7f14a7b5ab2679c117431294b1f1d0dd94c6dedb4944c3",
+      "sha256": "898f9ea169c061a3ca5ac3965351aee0f8887c5f498d1f7e148c9a7845b8ff88",
       "source": "src/tasks/cli.py"
     },
     {
@@ -772,7 +772,7 @@
     {
       "destination": "src/tasks/template.py",
       "mode": "0644",
-      "sha256": "12f13c3557dc3259a79bbe68f2f4009fa051a4bb30a20254b5c89113d860fc3d",
+      "sha256": "5732d211f49b217b3a5dc58ec31345bfd71b95c0816520a96ebcdd8a8152e7cb",
       "source": "src/tasks/template.py"
     },
     {

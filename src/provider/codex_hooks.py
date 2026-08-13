@@ -9,7 +9,6 @@ pure/testable while the small scripts in scripts/ act as thin entrypoints.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
 import os
 import re
@@ -106,8 +105,6 @@ def parse_patch_paths(command: str) -> ParseResult:
         # headers ever match, paths stays empty → caller treats as deny.
 
     return ParseResult(paths=paths, had_headers=had_headers)
-MISSING_FILE_DIGEST = "__MISSING__"
-SESSION_BASELINE_KEY = "__session__"
 
 
 def resolve_session_id() -> str:
@@ -287,8 +284,8 @@ def render_playbook_hooks() -> dict:
 
     PostToolUse: scoped to `^apply_patch$` only. A successful native file edit
     publishes gate chronology and injects the next authoritative gate. Shell
-    writes remain outside pre-edit prevention; the Stop hook is their post-hoc
-    enforcement boundary.
+    writes remain outside pre-edit prevention because shared-worktree state
+    cannot establish which session authored them.
     """
     return {
         "hooks": {
@@ -879,36 +876,6 @@ def apply_patch_post_context(
     }
 
 
-def _baseline_key(turn_id: str | None) -> str:
-    if not turn_id:
-        return SESSION_BASELINE_KEY
-    return "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in turn_id)
-
-
-def _turn_baseline_file(project_root: Path, session_id: str, turn_id: str | None) -> Path:
-    safe_turn_id = _baseline_key(turn_id)
-    session_dir = session_state_dir(project_root, session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir / f"codex-dirty-baseline-{safe_turn_id}.json"
-
-
-def _stop_block_marker_file(project_root: Path, session_id: str, turn_id: str | None) -> Path:
-    """Marker recording that the Codex Stop hook already blocked once this turn.
-
-    Codex has NO stop-block cap — unlike Claude's `stop_hook_active`
-    self-release and the `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` runtime cap (2.1.143).
-    So a persistent block condition loops forever: e.g. a concurrent agent
-    editing the shared worktree, whose changes whole-tree `git status` can't
-    distinguish from this session's. We block at most once per turn, then
-    self-release. The marker is keyed by turn_id and reset on each new turn's
-    baseline so a genuinely new edit still gets nudged once.
-    """
-    safe_turn_id = _baseline_key(turn_id)
-    session_dir = session_state_dir(project_root, session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir / f"codex-stop-blocked-{safe_turn_id}.flag"
-
-
 def _session_counter_path(project_root: Path, session_id: str) -> Path:
     return session_state_dir(project_root, session_id) / "counters"
 
@@ -976,153 +943,6 @@ def append_prompt_to_chat_log(
     return True
 
 
-def _digest_for_file(path: Path) -> str:
-    if not path.exists():
-        return MISSING_FILE_DIGEST
-    if path.is_dir():
-        return MISSING_FILE_DIGEST
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _all_code_files_state(project_root: Path) -> dict[str, str]:
-    """Fallback snapshot for non-Git projects: hash all code files under the repo."""
-    state: dict[str, str] = {}
-    skip_dirs = {".git", ".agent", ".claude", ".codex", ".pytest_cache", ".hypothesis", "__pycache__"}
-    for path in project_root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel_path = path.relative_to(project_root).as_posix()
-        parts = set(rel_path.split("/"))
-        if parts & skip_dirs:
-            continue
-        if not _is_code_file_path(rel_path):
-            continue
-        state[rel_path] = _digest_for_file(path)
-    return state
-
-
-def code_state(project_root: Path) -> dict[str, str]:
-    """Return a snapshot of relevant code changes for the current project.
-
-    In Git repos, only dirty code files are tracked. Outside Git, fall back to
-    a full code-file snapshot so no-task steering still works.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(project_root),
-                "status",
-                "--porcelain=v1",
-                "--untracked-files=all",
-                "-z",
-            ],
-            capture_output=True,
-            check=False,
-        )
-    except OSError:
-        return _all_code_files_state(project_root)
-
-    if result.returncode != 0:
-        return _all_code_files_state(project_root)
-
-    state: dict[str, str] = {}
-    entries = result.stdout.decode("utf-8", errors="replace").split("\0")
-    idx = 0
-    while idx < len(entries):
-        entry = entries[idx]
-        idx += 1
-        if not entry:
-            continue
-        if len(entry) < 4:
-            continue
-        status = entry[:2]
-        rel_path = entry[3:]
-        if "R" in status or "C" in status:
-            if idx >= len(entries):
-                break
-            rel_path = entries[idx]
-            idx += 1
-        rel_path = rel_path.strip()
-        if not rel_path or not _is_code_file_path(rel_path):
-            continue
-        state[rel_path] = _digest_for_file(project_root / rel_path)
-    return state
-
-
-def save_turn_baseline(project_root: Path, session_id: str, turn_id: str | None) -> Path:
-    """Persist the starting dirty code state for a Codex turn.
-
-    If turn_id is unavailable, fall back to a session-scoped baseline key.
-    """
-    baseline_file = _turn_baseline_file(project_root, session_id, turn_id)
-    baseline_file.write_text(
-        json.dumps(code_state(project_root), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    # Re-arm the per-turn stop-block self-release: a fresh turn may legitimately
-    # block once again. (Keyed by turn_id, so distinct turns are independent;
-    # this matters when turn_id is missing and degrades to a session key.)
-    marker = _stop_block_marker_file(project_root, session_id, turn_id)
-    try:
-        marker.unlink()
-    except (OSError, FileNotFoundError):
-        pass
-    return baseline_file
-
-
-def checkpoint_turn_baselines(project_root: Path, session_id: str) -> int:
-    """Commit authorized code state into this Codex session's Stop baselines.
-
-    A task may be activated, worked, and closed within one Codex turn.  Once
-    closure removes the active-task pointer, Stop must compare against the
-    authorized state at that lifecycle boundary rather than the older
-    prompt-start state.  Update every extant turn key because the tasks CLI
-    knows the native session identity but does not receive Codex's turn ID.
-
-    Later no-task edits remain detectable because they occur after this
-    checkpoint.  Baselines belonging to other sessions are never touched.
-    """
-    session_dir = session_state_dir(project_root, session_id)
-    if not session_dir.exists():
-        return 0
-
-    snapshot = json.dumps(code_state(project_root), indent=2, sort_keys=True) + "\n"
-    baseline_files = list(session_dir.glob("codex-dirty-baseline-*.json"))
-    for baseline_file in baseline_files:
-        baseline_file.write_text(snapshot, encoding="utf-8")
-
-    # Re-arm Stop relative to the checkpoint.  A marker left by an earlier
-    # active-task stop must not suppress a genuinely new post-closure edit.
-    for marker in session_dir.glob("codex-stop-blocked-*.flag"):
-        try:
-            marker.unlink()
-        except FileNotFoundError:
-            pass
-    return len(baseline_files)
-
-
-def load_turn_baseline(project_root: Path, session_id: str, turn_id: str | None) -> dict[str, str] | None:
-    baseline_file = _turn_baseline_file(project_root, session_id, turn_id)
-    if not baseline_file.exists():
-        return None
-    try:
-        return json.loads(baseline_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-
-def has_new_code_changes(baseline: dict[str, str], current: dict[str, str]) -> bool:
-    """Return True when the current dirty-code snapshot differs from the baseline."""
-    for path, digest in current.items():
-        if path not in baseline:
-            return True
-        if baseline[path] != digest:
-            return True
-    return False
-
-
 def _active_task_stop_decision(project_root: Path, session_id: str) -> dict:
     """Reuse the existing authoritative stop guard for active-task sessions."""
     stop_hook = playbook_scripts_dir() / "stop-hook"
@@ -1158,40 +978,14 @@ def _active_task_stop_decision(project_root: Path, session_id: str) -> dict:
     }
 
 
-def stop_decision_for_no_task_code_changes(
-    project_root: Path,
-    session_id: str,
-    turn_id: str | None,
-) -> dict:
-    """Return the JSON response for Codex Stop hooks, capped at one block per turn.
+def codex_stop_decision(project_root: Path, session_id: str) -> dict:
+    """Enforce attributable task lifecycle state at Codex Stop.
 
-    Missing turn identifiers degrade to a session-scoped baseline rather than
-    disabling enforcement silently. **Self-release**: any block decision fires at
-    most once per turn — Codex has no stop-block cap (no `stop_hook_active`,
-    no `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP`), so a persistent block condition (e.g. a
-    concurrent agent editing the shared worktree) would otherwise loop forever.
-    The marker is reset each new turn (`save_turn_baseline`), so a genuinely new
-    edit still gets nudged once. See `_stop_block_marker_file`.
+    Repository diffs are deliberately not inspected here: a shared worktree
+    cannot tell which session authored a change. No-task edits through
+    ``apply_patch`` are rejected before mutation by the attributable tool hook;
+    shell writes remain outside Playbook's enforcement boundary.
     """
-    decision = _compute_stop_decision(project_root, session_id, turn_id)
-    if decision.get("decision") == "block":
-        marker = _stop_block_marker_file(project_root, session_id, turn_id)
-        if marker.exists():
-            return {}  # already nudged this turn — let the turn end
-        try:
-            marker.write_text("1", encoding="utf-8")
-        except OSError:
-            pass
-    return decision
-
-
-def _compute_stop_decision(
-    project_root: Path,
-    session_id: str,
-    turn_id: str | None,
-) -> dict:
-    """Raw Codex stop evaluation (no self-release; wrapped by
-    stop_decision_for_no_task_code_changes)."""
     active_task, authority_error = active_task_authority(project_root, session_id)
     if authority_error:
         return {
@@ -1200,26 +994,4 @@ def _compute_stop_decision(
         }
     if active_task is not None:
         return _active_task_stop_decision(project_root, session_id)
-
-    baseline = load_turn_baseline(project_root, session_id, turn_id)
-    if baseline is None:
-        return {}
-
-    current = code_state(project_root)
-    if not has_new_code_changes(baseline, current):
-        return {}
-
-    changed = sorted(path for path, digest in current.items() if baseline.get(path) != digest)
-    changed_preview = ", ".join(changed[:3])
-    if len(changed) > 3:
-        changed_preview += ", ..."
-    reason = (
-        "You changed code without an active Playbook task"
-        + (f" ({changed_preview})" if changed_preview else "")
-        + ". Run `pb-tasks work <N>` if this belongs to an existing task, "
-          "or create one with `pb-tasks new quick <name> <intent>` before continuing."
-    )
-    return {
-        "decision": "block",
-        "reason": reason,
-    }
+    return {}

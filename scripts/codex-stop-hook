@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 
-"""Codex Stop hook: steer back into Playbook after no-task code edits."""
+"""Codex Stop hook: enforce attributable active-task lifecycle state."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ def _find_project_root() -> Path:
 def main() -> int:
     _bootstrap_imports()
     from provider.codex_hooks import (
+        codex_stop_decision,
         session_state_dir,
-        stop_decision_for_no_task_code_changes,
     )
 
     payload = json.load(sys.stdin)
@@ -38,12 +38,9 @@ def main() -> int:
     from provider.session_identity import hook_session_id
     session_id = hook_session_id("codex", payload, os.environ)
     session_state_dir(project_root, session_id)
-    turn_id = payload.get("turn_id")
-
-    decision = stop_decision_for_no_task_code_changes(
+    decision = codex_stop_decision(
         project_root=project_root,
         session_id=session_id,
-        turn_id=turn_id,
     )
     sys.stdout.write(json.dumps(decision))
     return 0

@@ -1327,24 +1327,6 @@ def main():
                     sys.exit(1)
                 if not force and _gate_bounce(prev_task, task_file, "closing this task"):
                     sys.exit(1)
-                # Codex Stop compares the dirty-code tree with a prompt-start
-                # baseline.  Commit the authorized state before removing this
-                # session's active-task pointer, otherwise a task completed in
-                # one turn is falsely reported as unowned work at turn end.
-                if current_key.provider == "codex":
-                    from provider.codex_hooks import checkpoint_turn_baselines
-
-                    try:
-                        checkpoint_turn_baselines(
-                            project_path, current_key.session_id
-                        )
-                    except OSError as exc:
-                        print(
-                            f"Error: cannot checkpoint Codex Stop state before "
-                            f"closing task {prev_task}: {exc}",
-                            file=sys.stderr,
-                        )
-                        sys.exit(1)
                 try:
                     completed = complete_task_document(task_file, current_key)
                 except (OSError, TaskDocumentError) as exc:
