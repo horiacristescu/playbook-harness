@@ -37,6 +37,11 @@ The installed provider launcher set now includes `pb-claude` alongside
 `pb-<provider>` naming rule. The wrapper delegates Claude arguments unchanged
 while scrubbing inherited agent identities and establishing project context.
 
+Tmux remains an optional point-of-use dependency. `pb-session` and
+`pb-tmux-agent` now diagnose its absence before reserving durable state and give
+the agent exact permission/install/retry guidance; `pb-tasks init` remains
+project-only and never installs machine packages.
+
 ## Tmux fleet-monitor skill and legacy retirement — 2026-08-12
 
 The public artifact now ships one canonical `monitor` skill to every supported

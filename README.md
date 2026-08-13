@@ -138,6 +138,11 @@ change the user's ordinary tmux server or configuration. Managed bodies use a
 separate Playbook-owned tmux server; runs, logs, and results live under the XDG
 state directory rather than inside a project:
 
+If tmux is absent, `pb-session` and `pb-tmux-agent` stop before creating session
+state and tell the agent to ask permission, install tmux with the machine's
+package manager, and retry the same command. `pb-tasks init` never installs
+machine packages.
+
 ```bash
 pb-tmux-agent start reviewer command -- python3 -u -c 'print(input())'
 pb-tmux-agent send reviewer "review this change"

@@ -158,11 +158,14 @@ class TmuxClient:
             prefix.extend(["-L", self.socket_name])
         return [*prefix, *arguments]
 
-    def require(self) -> None:
+    def require(self, consumer: str = "pb-tmux-agent") -> None:
         if shutil.which(self.binary) is None:
             raise TmuxAgentError(
-                "tmux is required for pb-tmux-agent but was not found on PATH; "
-                "install tmux with your system package manager"
+                f"tmux is required for {consumer} but was not found on PATH. "
+                "Ask the user for permission to install tmux with the machine's "
+                "package manager, then retry the same command. "
+                "macOS/Homebrew: `brew install tmux`; "
+                "Debian/Ubuntu: `sudo apt-get install tmux`."
             )
 
     def run(

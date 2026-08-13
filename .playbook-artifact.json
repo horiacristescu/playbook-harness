@@ -1,5 +1,5 @@
 {
-  "commit": "1a11539d5b3e404714d7bdc3d0ca6cda0b9d42a5",
+  "commit": "a85871aa23ce3fd716a5a1215705d82cb151192d",
   "files": [
     {
       "destination": "LICENSE",
@@ -10,7 +10,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "286bb89c5f036febd6c4c1c7ef3d16d122dadc559feb676388f662bb1c67c810",
+      "sha256": "a247557735e85e406595a9422dedb4dafeb5f2636fbdde88f0d567910cafca51",
       "source": "README.md"
     },
     {
@@ -286,7 +286,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "d3a2a2efa30ac655b5ef61f898ce64b493741677801a24899bc6ffc693b0a151",
+      "sha256": "01a8bb6e79f438de8e7582c9a9b3effad4ec431274339ef9428d595305d5f557",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -670,7 +670,7 @@
     {
       "destination": "src/session_cli.py",
       "mode": "0644",
-      "sha256": "9bd39c04615df0fecc58d3818eeb26e93a259b143217163f500fdbc7f4e984c4",
+      "sha256": "77f3ffecdcb43e869e6479f629931e12548b3961c8232380a17a3876819be551",
       "source": "src/session_cli.py"
     },
     {
@@ -796,7 +796,7 @@
     {
       "destination": "src/tmux_agent.py",
       "mode": "0644",
-      "sha256": "bc945c9010c9a3cc568b9727902cfbfc65b16f7c75600bd6f9db150f47ae7657",
+      "sha256": "17e23a6165962f818fd3b0a8b6189ba897c953172ed9be24c3816c9f8960f78a",
       "source": "src/tmux_agent.py"
     }
   ],

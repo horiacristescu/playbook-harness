@@ -38,6 +38,7 @@ from provider.session_state import (
 )
 from tasks.core import resolve_agent_dir
 from tmux_agent import (
+    TmuxClient,
     TmuxAgentError,
     attach_run,
     label_run,
@@ -873,6 +874,10 @@ def resume_session(
     attach: bool = True,
     handshake_timeout: float = 120.0,
 ) -> dict:
+    # Preflight the optional machine dependency before reconciling or reserving
+    # any durable session state. The agent can install it with user approval and
+    # retry this exact command.
+    TmuxClient().require("pb-session")
     path, record = resolve_session_record(agent_dir, address)
     if record.get("managed") is not True:
         raise SessionStateError("only managed sessions can be resumed")
@@ -1011,6 +1016,10 @@ def start_managed_session(
     handshake_timeout: float = 120.0,
 ) -> dict:
     """Start one tmux body and wait for its provider-native identity binding."""
+
+    # Keep project initialization machine-neutral; diagnose tmux only when the
+    # user first asks for a managed body, before a launch reservation exists.
+    TmuxClient().require("pb-session")
 
     if project_root is None:
         from tasks.cli import find_project_root
