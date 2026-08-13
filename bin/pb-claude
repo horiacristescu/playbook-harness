@@ -1,0 +1,30 @@
+#!/bin/bash
+# pb-claude — launch Claude Code without inheriting another agent's identity.
+#
+# Usage: pb-claude [claude-args...]
+#
+# Claude owns the durable session ID. The wrapper establishes only project and
+# provider context; Claude's native hooks expose and validate the session ID.
+
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
+RUNTIME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+SHARED_LIB="$RUNTIME_ROOT/scripts/gate-echo-lib.sh"
+if [ ! -f "$SHARED_LIB" ]; then
+    echo "Error: Playbook shared runtime missing: $SHARED_LIB" >&2
+    exit 1
+fi
+# shellcheck source=../scripts/gate-echo-lib.sh
+. "$SHARED_LIB"
+
+PROJECT_ROOT="$(find_project_root)"
+
+# A nested agent must not inherit the parent's provider or normalized identity.
+unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
+    ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE
+export PLAYBOOK_PROVIDER="claude"
+export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
+
+exec claude "$@"

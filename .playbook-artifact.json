@@ -1,5 +1,5 @@
 {
-  "commit": "99af127ad4a30e1e3b06798530f6a6043da864ed",
+  "commit": "1a11539d5b3e404714d7bdc3d0ca6cda0b9d42a5",
   "files": [
     {
       "destination": "LICENSE",
@@ -10,7 +10,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "b111216bbb77718a6e5b9ffe8609c3b2ee8f2edb6838dab58e17d5af19fc150d",
+      "sha256": "286bb89c5f036febd6c4c1c7ef3d16d122dadc559feb676388f662bb1c67c810",
       "source": "README.md"
     },
     {
@@ -200,6 +200,12 @@
       "source": "arena/bin/arena"
     },
     {
+      "destination": "bin/pb-claude",
+      "mode": "0755",
+      "sha256": "0f66abbcaf07279ccbf5e3c64b21e470772a466ab83d2e3a63c5826b85c1edf4",
+      "source": "bin/playbook-claude"
+    },
+    {
       "destination": "bin/pb-codex",
       "mode": "0755",
       "sha256": "17644f9a2aef182bf43aae2704157495cdd05ea1476a3d07ebc690630e0cdcd4",
@@ -280,7 +286,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "0a3056c1e71aa2bf72fd82b583973ce4d53da3bb0ae1b0dff949e585d7fc7436",
+      "sha256": "d3a2a2efa30ac655b5ef61f898ce64b493741677801a24899bc6ffc693b0a151",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -298,7 +304,7 @@
     {
       "destination": "install.sh",
       "mode": "0755",
-      "sha256": "c16034dce2c146391e49fd85d7fb12ea70d5943ba20ba5bcb2a21554918aef77",
+      "sha256": "7963c008ea8df70f8d9a00189307964320e7fac27a54423ca63d07241b2263f0",
       "source": "install.sh"
     },
     {
@@ -706,7 +712,7 @@
     {
       "destination": "src/tasks/installed_audit.py",
       "mode": "0644",
-      "sha256": "ec643bbf8ab4cdd929260b71b069fbf3a18af93bd186c66ec0993ad4b406f112",
+      "sha256": "445cce5ed5378d0bd407d0a58caad1003df75a354481e2c420ef441c23e1f915",
       "source": "src/tasks/installed_audit.py"
     },
     {

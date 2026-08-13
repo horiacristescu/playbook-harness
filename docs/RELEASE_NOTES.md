@@ -26,6 +26,17 @@ waiting. `pb-tasks doctor`, runtime generation reporting, named `pb-session`
 status, and public-artifact audits expose the serving runtime and require the
 Narrative instruction, implementation, and help surface to ship together.
 
+The ordinary curl installer is now convergent. When it finds an authenticated
+existing runtime, it stages and audits a fresh clone of current public `main`
+and recoverably replaces the prior checkout. A successful repeat installation
+therefore cannot leave an older commit presented as the current release;
+candidate clone or audit failures preserve the prior audited runtime.
+
+The installed provider launcher set now includes `pb-claude` alongside
+`pb-codex`, `pb-agy`, and `pb-pi`, giving direct launches one predictable
+`pb-<provider>` naming rule. The wrapper delegates Claude arguments unchanged
+while scrubbing inherited agent identities and establishing project context.
+
 ## Tmux fleet-monitor skill and legacy retirement — 2026-08-12
 
 The public artifact now ships one canonical `monitor` skill to every supported

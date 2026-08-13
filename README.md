@@ -108,10 +108,11 @@ pb-arena case list                     # inspect portable historical cases
 pb-arena canary list                   # inspect shipped network-free canaries
 ```
 
-Provider launchers `pb-codex`, `pb-agy`, and `pb-pi` are namespaced to avoid
-colliding with system commands. Bare Claude, Codex, and root-launched OMP use
-their project-local integrations; use a wrapper only where it adds documented
-session, sandbox, model, or extension behavior.
+Provider launchers `pb-claude`, `pb-codex`, `pb-agy`, and `pb-pi` offer one
+predictable Playbook-prefixed entry point while delegating provider arguments
+unchanged. Bare provider commands and root-launched OMP still use their
+project-local integrations; use `pb-session` when the body should also be named,
+observable, resumable, and managed through tmux.
 
 `pb-session` composes provider-native conversation identity with an optional
 human name and one managed tmux body. A zero-argument launch uses the saved
@@ -179,12 +180,17 @@ bash ~/.local/share/playbook-harness/install.sh --uninstall
 Those commands show the default location. If you selected an XDG or explicit
 install directory, run that checkout's `install.sh` instead.
 
-- Normal reruns report the existing installation; they never upgrade silently.
+- Normal reruns are convergent: when an authenticated installation already
+  exists, the installer clones and audits current public `main`, then replaces
+  the runtime through the same recoverable staging path as reinstall. A
+  successful install therefore never leaves an older release presented as the
+  current runtime.
 - Upgrade requires an authenticated, clean `main` checkout with upstream
   `origin/main`, performs only `git pull --ff-only`, audits before and after,
   and warns that live agents may observe the short in-place update window.
-- Reinstall clones and audits a sibling replacement before swapping it in. It
-  does not retain an older runtime version after success.
+- Reinstall explicitly requests the same fresh-clone replacement used by a
+  normal repeat install. It remains accepted for lifecycle compatibility and
+  recovery scripts; users do not need it merely to obtain the latest release.
 - Repair recreates only marker-owned `pb-*` launchers.
 - Machine uninstall removes the managed runtime and launchers, but deliberately
   preserves every project-local file and hook.

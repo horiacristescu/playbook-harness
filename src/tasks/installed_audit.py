@@ -13,7 +13,7 @@ ARTIFACT_MANIFEST = ".playbook-artifact.json"
 MANIFEST_SCHEMA = 1
 REQUIRED_PATHS = frozenset({
     "install.sh", "README.md", "bin/pb-tasks", "bin/pb-sandbox",
-    "bin/pb-codex", "bin/pb-agy", "bin/pb-pi", "bin/pb-session",
+    "bin/pb-claude", "bin/pb-codex", "bin/pb-agy", "bin/pb-pi", "bin/pb-session",
     "bin/pb-tmux-agent", "bin/pb-arena",
     "hooks/claude-standalone.json", "scripts/playbook-pi-hook-adapter.ts",
     "scripts/playbook-pi-omlx-models.json", "src/tasks/cli.py",

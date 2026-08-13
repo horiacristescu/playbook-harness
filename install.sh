@@ -43,7 +43,7 @@ TRANSACTION_FILE=""
 LOCK_OWNED=false
 SWAP_ACTIVE=false
 TRANSACTION_OWNED=false
-PB_COMMANDS="pb-tasks pb-sandbox pb-codex pb-agy pb-pi pb-session pb-tmux-agent pb-arena"
+PB_COMMANDS="pb-tasks pb-sandbox pb-claude pb-codex pb-agy pb-pi pb-session pb-tmux-agent pb-arena"
 SHIM_MARKER_PREFIX="# playbook-harness-managed-shim schema=1 root="
 SHIM_MARKER=""
 
@@ -576,6 +576,13 @@ if { [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; } \
   if [ "$OPERATION" != "install" ] && [ "$REPAIR_LAUNCHERS" = true ]; then
     die "--$OPERATION and --repair-launchers cannot be combined"
   fi
+  # Installation is a desired-state operation: seeing an authenticated existing
+  # runtime means refresh it through the same staged, audited replacement path.
+  # A successful plain curl rerun must never leave an older commit presented as
+  # the installed Playbook version.
+  if [ "$OPERATION" = "install" ] && [ "$REPAIR_LAUNCHERS" = false ]; then
+    OPERATION=reinstall
+  fi
   if [ "$OPERATION" = "upgrade" ]; then
     branch=$(git -C "$INSTALL_DIR" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     [ "$branch" = "main" ] || die "upgrade requires the managed checkout on main (found ${branch:-detached})"
@@ -661,12 +668,6 @@ if { [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; } \
     report_agents_and_path
     exit 0
   fi
-  self_audit "$INSTALL_DIR" || die "installed runtime audit failed; run an explicit validated reinstall"
-  write_shims
-  printf 'Playbook Harness is already installed at %s\n' "$INSTALL_DIR"
-  printf 'Upgrade: bash %s/install.sh --upgrade\n' "$INSTALL_DIR"
-  printf 'Reinstall: bash %s/install.sh --reinstall\n' "$INSTALL_DIR"
-  exit 0
 fi
 
 [ "$OPERATION" = "install" ] \
@@ -725,6 +726,6 @@ STAGING_DIR=""
 test_fail_at after_runtime_publish
 write_shims
 
-printf '  Commands    %s/pb-tasks, pb-sandbox, pb-codex, pb-agy, pb-pi, pb-session, pb-tmux-agent, pb-arena\n' "$BIN_DIR"
+printf '  Commands    %s/pb-tasks, pb-sandbox, pb-claude, pb-codex, pb-agy, pb-pi, pb-session, pb-tmux-agent, pb-arena\n' "$BIN_DIR"
 report_agents_and_path
 printf '\nNext: cd <project> && pb-tasks init\n'
