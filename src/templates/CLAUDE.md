@@ -41,6 +41,15 @@ Before creating a task, inspect the most recent 2–3 tasks and cluster matching
 work into the related task: reopen it with `pb-tasks work <N>` and append unchecked gates.
 Create a new task only when none of those recent tasks honestly matches.
 
+## Enforcement Scope
+
+The workflow rule is broader than hook coverage: activate a task before every
+repository code edit. Hooks recognize configured code paths and validate
+task.md gate order through structured editor calls. Shell-command detection is
+heuristic and bypassable; only sandbox containment can physically deny an
+arbitrary shell write. An active task authorizes repository code edits but does
+not prove that an edit semantically belongs to the current gate.
+
 ```
 pb-tasks new <type> <name> [intent]   # creates task.md — then immediately:
 pb-tasks work <N>                     # activate it — hooks start enforcing
@@ -48,9 +57,11 @@ pb-tasks work <N>                     # activate it — hooks start enforcing
 
 Work through task.md gates: Design Phase (understand, structure, verify) → Work Plan (build/investigate gates) → Pre-review. Check each gate's checkbox as you complete it, appending your observations on the same line.
 
-When done: `pb-tasks work done` — deactivates the task, sets status to done.
+When every gate is checked and the task intent is honestly reconciled, run
+`pb-tasks work done` explicitly. It deactivates the task and sets status to
+done; do not rely on a later task switch to close completed work.
 
-The task.md **is** the execution trace. Never skip checkboxes. Never backfill. One gate at a time.
+The task.md **is** the execution trace. The hook supplies the exact current gate and line; close it with the normal Edit tool and let the hook supply the next gate. Never skip checkboxes. Never backfill. One gate at a time.
 
 ## CLI
 
@@ -69,4 +80,4 @@ pb-tasks bootstrap                   # orientation: mind map + skills + pending
 - Edit `.agent/sessions/` state files directly — use `pb-tasks work <N>` / `pb-tasks work done`
 - Edit `## Status` in task.md directly — use `pb-tasks work done`
 - Skip task.md checkboxes — they're your observable progress
-- Start coding without an active task — blocked by hook until `pb-tasks work <N>`
+- Start coding without an active task — run `pb-tasks work <N>` first; hook coverage has the limits above

@@ -2,6 +2,7 @@
 description: Upgrade the Playbook Harness machine runtime
 allowed-tools: [Bash, Read]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/upgrade.md","source_hash":"4f99937b51d35fe59723d89984158f739496665c652c1dfa46e15ecce4ef17c1"} -->
 
 # Upgrade Playbook Harness
 

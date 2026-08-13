@@ -2,6 +2,7 @@
 description: Enter freehand mode — user drives, agent executes, no gate pressure
 allowed-tools: [Read, Write, Edit, Bash, Glob, Grep]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/freehand.md","source_hash":"f5e61ac919de2ffd3e2891a53d6224d8ecb0295a37a421b8620da228d5930477"} -->
 
 # Freehand
 

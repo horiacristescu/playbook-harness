@@ -5,14 +5,6 @@
 
 from __future__ import annotations
 
-# Skip when invoked from the monitor's own claude session (see launch-monitor).
-# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
-import os as _os
-import sys as _sys
-if _os.environ.get("PLAYBOOK_ROLE") == "monitor":
-    print(f"[{__file__.rsplit('/', 1)[-1]}] skip (PLAYBOOK_ROLE=monitor)", file=_sys.stderr)
-    _sys.exit(0)
-
 import json
 import os
 import sys
@@ -30,23 +22,27 @@ def _bootstrap_imports() -> None:
 
 def _find_project_root() -> Path:
     env_root = os.environ.get("PLAYBOOK_PROJECT_ROOT")
-    if env_root:
-        return Path(env_root)
     from provider.codex_hooks import find_project_root
-    return find_project_root(Path.cwd())
+    return find_project_root(Path.cwd(), Path(env_root) if env_root else None)
 
 
 def main() -> int:
     _bootstrap_imports()
-    from provider.codex_hooks import append_prompt_to_chat_log, save_turn_baseline
+    from provider.codex_hooks import (
+        append_prompt_to_chat_log,
+        save_turn_baseline,
+        session_state_dir,
+    )
 
     payload = json.load(sys.stdin)
     turn_id = payload.get("turn_id")
     prompt = payload.get("prompt")
 
     project_root = _find_project_root()
-    from provider.codex_hooks import resolve_session_id
-    session_id = resolve_session_id()
+    from provider.session_identity import hook_session_id
+    session_id = hook_session_id("codex", payload, os.environ)
+    # Validate the entire state boundary before chat-log or baseline mutation.
+    session_state_dir(project_root, session_id)
     append_prompt_to_chat_log(project_root, session_id, prompt)
     save_turn_baseline(project_root, session_id, turn_id)
     return 0

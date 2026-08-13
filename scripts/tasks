@@ -23,4 +23,5 @@ else
     exit 1
 fi
 
+PLAYBOOK_TASKS_EXECUTABLE="$SCRIPT_DIR/$(basename "$0")" \
 PYTHONPATH="${PLAYBOOK_PYPATH}${PYTHONPATH:+:${PYTHONPATH}}" exec python3 -m tasks.cli "$@"

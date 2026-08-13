@@ -10,9 +10,8 @@ Hook surface: agy v1.0.2 has a Claude-compatible plugin loader that accepts
 PreToolUse / PostToolUse / UserPromptSubmit / Stop hooks via project-local
 plugin manifests. install_hooks writes the manifest (T134 W5a).
 
-Session identity: no AGY_SESSION_ID env var. Resolution order:
-  1. $PLAYBOOK_SESSION_ID (set by scripts/playbook-agy wrapper — preferred)
-  2. PID-walk fallback: find 'agy' in parent process chain, use pid-<N>
+Session identity: agy v1.1.10 exposes one native conversation ID as hook payload
+`conversationId` and command environment `ANTIGRAVITY_CONVERSATION_ID`.
 
 Session transcript: JSONL at
     ~/.gemini/antigravity/brain/<uuid>/.system_generated/logs/transcript.jsonl
@@ -28,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -35,6 +35,12 @@ from typing import Optional
 from ..adapter import ProviderAdapter, Invocation
 from ..capabilities import ProviderCapabilities, SessionFacts
 from ..policy import Decision
+from ..session_identity import (
+    SessionConformance,
+    command_session_id,
+    declared_session_conformance,
+    scrub_inherited_session_identity,
+)
 
 
 _USER_REQUEST_RE = re.compile(
@@ -104,6 +110,7 @@ class AntigravityAdapter(ProviderAdapter):
         agent_args = inv.argv + ["--print-timeout", f"{timeout_secs}s"]
         env = os.environ.copy()
         env["PLAYBOOK_SESSION_ID"] = self._session_id or "judge"
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         from provider import sandbox as _sandbox
         result = _sandbox.run(
             "agy", agent_args,
@@ -203,39 +210,41 @@ class AntigravityAdapter(ProviderAdapter):
 
         Returns the manifest root path suitable for `agy plugin install <path>`.
         """
+        import shutil
+
         from tasks.core import VERSION
         from ..runtime_paths import user_cache_dir
 
         cache_dir = user_cache_dir() / "agy-plugin" / self._PLUGIN_NAME
+        # This directory is the complete package input to `agy plugin install`.
+        # Remove obsolete layouts before rebuilding: an older `hooks/hooks.json`
+        # otherwise survives beside the current root `hooks.json`, and Agy can
+        # execute both generations of hooks.
+        if cache_dir.exists():
+            shutil.rmtree(cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
         (cache_dir / "plugin.json").write_text(
             json.dumps({"name": self._PLUGIN_NAME, "version": VERSION}, indent=2),
             encoding="utf-8",
         )
-        hooks_dir = cache_dir / "hooks"
-        hooks_dir.mkdir(exist_ok=True)
+        bridge = scripts_dir / "agy-hook-bridge.py"
 
-        def _entry(script: str, matcher: Optional[str] = None) -> dict:
-            entry: dict = {
-                "hooks": [{
-                    "type": "command",
-                    "command": str(scripts_dir / script),
-                    "timeout": 5000,
-                }],
+        def _handler(event: str) -> dict:
+            return {
+                "type": "command",
+                "command": f"python3 {shlex.quote(str(bridge))} {event}",
+                "timeout": 5,
             }
-            if matcher is not None:
-                entry["matcher"] = matcher
-            return entry
 
         hooks_doc = {
-            "hooks": {
-                "PreToolUse":        [_entry("task-gate-hook",  matcher=".*")],
-                "PostToolUse":       [_entry("state-echo-hook", matcher=".*")],
-                "UserPromptSubmit":  [_entry("chat-log-hook")],
-                "Stop":              [_entry("stop-hook")],
+            self._PLUGIN_NAME: {
+                "PreInvocation": [_handler("pre-invocation")],
+                "PreToolUse": [{"matcher": "*", "hooks": [_handler("pre-tool")]}],
+                "PostToolUse": [{"matcher": "*", "hooks": [_handler("post-tool")]}],
+                "Stop": [_handler("stop")],
             }
         }
-        (hooks_dir / "hooks.json").write_text(
+        (cache_dir / "hooks.json").write_text(
             json.dumps(hooks_doc, indent=2), encoding="utf-8",
         )
         return cache_dir
@@ -253,18 +262,34 @@ class AntigravityAdapter(ProviderAdapter):
             [agy_bin, "plugin", "install", str(cache_dir)],
             capture_output=True, text=True,
         )
-        if result.returncode == 0:
-            print(f"  agy plugin   installed ({self._PLUGIN_NAME})")
-        else:
+        if result.returncode != 0:
             print(f"  agy plugin   install failed: {result.stderr.strip()}")
+            return
+
+        enabled = subprocess.run(
+            [agy_bin, "plugin", "enable", self._PLUGIN_NAME],
+            capture_output=True, text=True,
+        )
+        if enabled.returncode == 0:
+            print(f"  agy plugin   installed and enabled ({self._PLUGIN_NAME})")
+        else:
+            print(f"  agy plugin   enable failed: {enabled.stderr.strip()}")
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
+    def interactive_argv(self, *, prompt: str, model: Optional[str] = None,
+                         resume_session_id: Optional[str] = None) -> list[str]:
+        argv: list[str] = []
+        if resume_session_id:
+            argv += ["--conversation", resume_session_id]
+        if model:
+            argv += ["--model", model]
+        return [*argv, "--prompt-interactive", prompt]
+
     def launch_interactive(self, project_root: Path, **kwargs) -> int:
-        """Launch `agy` TUI with PLAYBOOK_SESSION_ID pre-set."""
-        import uuid
-        env = os.environ.copy()
-        env["PLAYBOOK_SESSION_ID"] = self._session_id or str(uuid.uuid4())
+        """Launch `agy`; the provider creates and exposes its native ID."""
+        env = scrub_inherited_session_identity(os.environ)
+        env["PLAYBOOK_PROVIDER"] = "antigravity"
         env["PLAYBOOK_PROJECT_ROOT"] = str(project_root)
         result = subprocess.run(["agy"], cwd=project_root, env=env, **kwargs)
         return result.returncode
@@ -278,6 +303,7 @@ class AntigravityAdapter(ProviderAdapter):
         import uuid
         env = os.environ.copy()
         env["PLAYBOOK_SESSION_ID"] = self._session_id or str(uuid.uuid4())
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         env["PLAYBOOK_PROJECT_ROOT"] = str(project_root)
         result = subprocess.run(
             ["agy", "--add-dir", str(project_root),
@@ -289,21 +315,16 @@ class AntigravityAdapter(ProviderAdapter):
     # ── Capabilities ─────────────────────────────────────────────────────────
 
     def detect_capabilities(self) -> ProviderCapabilities:
-        """agy v1.0.2: plugin-system hooks (Claude-compatible schema, probed).
-
-        Hook surface confirmed via `agy plugin validate` accepting Claude-shape
-        hooks/hooks.json + binary strings (`PreToolUse`, `PostToolUse`, `Stop`,
-        `HooksPanel`). Capability flags reflect plugin-installable hooks; actual
-        hook firing under agy requires install_hooks (W5a) + smoke test (W6b).
-        """
+        """Agy plugin hooks with provider-native camelCase payloads."""
         log_base = self._BRAIN_DIR
         return ProviderCapabilities(
             provider="antigravity",
-            has_user_prompt_hook=True,
+            # Agy has PreInvocation but no UserPromptSubmit-equivalent payload.
+            has_user_prompt_hook=False,
             has_pre_tool_hook=True,
             has_post_tool_hook=True,
             has_stop_hook=True,
-            session_id_in_payload=False,
+            session_id_in_payload=True,
             session_log_format="jsonl",
             session_log_base=log_base if log_base.exists() else None,
         )
@@ -397,14 +418,17 @@ class AntigravityAdapter(ProviderAdapter):
 
     @classmethod
     def from_env(cls, project_root: Path) -> "AntigravityAdapter":
-        """Construct adapter using best available session ID source.
+        """Construct from Agy's authoritative command environment only."""
+        return cls(
+            session_id=command_session_id("antigravity", os.environ),
+            project_root=project_root,
+        )
 
-        Priority:
-        1. PLAYBOOK_SESSION_ID (set by scripts/playbook-agy wrapper)
-        2. PID-walk to find 'agy' parent process
-        """
-        from .codex import _pid_walk_session_id
-        session_id = os.environ.get("PLAYBOOK_SESSION_ID", "")
-        if not session_id:
-            session_id = _pid_walk_session_id(provider_names=["agy"])
-        return cls(session_id=session_id, project_root=project_root)
+    def session_conformance(self) -> SessionConformance:
+        """Publish the live-and-coded Agy 1.1.12 identity contract."""
+        return declared_session_conformance(
+            "antigravity",
+            exact_resume=True,
+            resume_cwd="current project with --conversation <native-id>",
+            supported=True,
+        )

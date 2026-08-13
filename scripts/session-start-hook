@@ -12,27 +12,27 @@
 
 set -e
 
-# Skip when invoked from the monitor's own claude session (see launch-monitor).
-# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
-if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
-    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
-    exit 0
-fi
-
 # Source shared lib (same directory)
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOK_DIR/gate-echo-lib.sh"
 
-# Use PID-based session ID via resolve_session_id (gate-echo-lib.sh).
-# Walks process tree, finds claude/codex/agy/pi ancestor, uses pid-<that>.
-# Same value as pid-$PPID at session-start (claude is direct parent), but
-# consistent with all other hooks — no drift risk.
 INPUT=$(cat)
-SESSION_ID="$(resolve_session_id)"
+# This entrypoint is installed only into Claude's hook surface. Never inherit a
+# parent agent's PLAYBOOK_PROVIDER when Claude is launched from another agent.
+PROVIDER="$(resolve_hook_provider)"
+SESSION_ID="$(resolve_hook_session_id "$PROVIDER" "$INPUT")"
 
-# Write to CLAUDE_ENV_FILE so it persists for all Bash calls this session
-if [ -n "$CLAUDE_ENV_FILE" ]; then
-    echo "export PLAYBOOK_SESSION_ID=$SESSION_ID" >> "$CLAUDE_ENV_FILE"
+# Claude alone owns CLAUDE_ENV_FILE. Pi/OMP also call this shared lifecycle
+# hook and may inherit a parent Claude variable; they must never rewrite it.
+if [ "$PROVIDER" = "claude" ] && [ -n "${CLAUDE_ENV_FILE:-}" ]; then
+    echo "unset CODEX_THREAD_ID ANTIGRAVITY_CONVERSATION_ID" >> "$CLAUDE_ENV_FILE"
+    echo "export PLAYBOOK_SESSION_ID='$SESSION_ID'" >> "$CLAUDE_ENV_FILE"
+    echo "export PLAYBOOK_PROVIDER='$PROVIDER'" >> "$CLAUDE_ENV_FILE"
+    # The managed launch tuple is a single-use startup capability. Claude may
+    # later create background/compaction contexts with a different hook
+    # session_id; never let those child contexts inherit and retry the consumed
+    # capability on every tool hook.
+    echo "unset PLAYBOOK_MANAGED_LAUNCH_TOKEN PLAYBOOK_MANAGED_BODY_ID PLAYBOOK_MANAGED_PROJECT_ROOT" >> "$CLAUDE_ENV_FILE"
 fi
 
 # Auto-provision .claude/bin/ wrappers for playbook projects
@@ -48,15 +48,7 @@ if [ -n "$PROJECT_DIR" ]; then
     create_wrapper "$PROJECT_DIR" playbook-pi
 
     # Provision session directory for this session
-    SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
-    mkdir -p "$SESSION_DIR"
-
-    # GC: sweep stale session dirs from crashed/killed sessions (current_state >24h old)
-    SESSIONS_DIR="$AGENT_DIR/sessions"
-    if [ -d "$SESSIONS_DIR" ]; then
-        find "$SESSIONS_DIR" -maxdepth 2 -name 'current_state' -mtime +0 \
-            -exec dirname {} \; 2>/dev/null | xargs rm -rf 2>/dev/null || true
-    fi
+    SESSION_DIR="$(ensure_session_dir "$AGENT_DIR" "$PROVIDER" "$SESSION_ID")"
 fi
 
 exit 0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -11,6 +12,7 @@ from typing import Optional
 
 from ..adapter import Invocation, ProviderAdapter
 from ..capabilities import ProviderCapabilities
+from ..session_identity import SessionConformance, declared_session_conformance
 
 
 _MANAGED_BY = "playbook-harness"
@@ -103,9 +105,24 @@ class OmpAdapter(ProviderAdapter):
         if not path.is_file() or path.is_symlink():
             return False
         try:
-            first = path.read_text(encoding="utf-8").splitlines()[0]
-            return first in {_BRIDGE_MARKER, _LEGACY_BRIDGE_MARKER}
-        except OSError:
+            text = path.read_text(encoding="utf-8")
+            first = text.splitlines()[0]
+            if first in {_BRIDGE_MARKER, _LEGACY_BRIDGE_MARKER}:
+                return True
+            from tasks.reconcile import MANAGED_BY, MANAGED_SCHEMA, parse_managed_file
+
+            parsed = parse_managed_file(text, "slash")
+            if parsed is None:
+                return False
+            metadata, body = parsed
+            return (
+                metadata.get("managed_by") == MANAGED_BY
+                and metadata.get("schema") == MANAGED_SCHEMA
+                and metadata.get("source") == "scripts/playbook-pi-hook-adapter.ts"
+                and metadata.get("source_hash")
+                == hashlib.sha256(body.encode("utf-8")).hexdigest()
+            )
+        except (OSError, ValueError):
             return False
 
     @staticmethod
@@ -113,8 +130,31 @@ class OmpAdapter(ProviderAdapter):
         if not path.is_file() or path.is_symlink():
             return False
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            text = path.read_text(encoding="utf-8")
+            value = json.loads(text)
+            managed = value.get("_playbook_harness")
+            if managed is not None:
+                from tasks.reconcile import (
+                    MANAGED_BY,
+                    MANAGED_SCHEMA,
+                    json_value_digest,
+                    parse_managed_file,
+                )
+
+                parsed = parse_managed_file(text, "json")
+                if parsed is None:
+                    return False
+                marker, body = parsed
+                return (
+                    marker.get("managed_by") == MANAGED_BY
+                    and marker.get("schema") == MANAGED_SCHEMA
+                    and marker.get("source")
+                    == "tasks/provider_contributions:omp-metadata"
+                    and marker.get("source_hash")
+                    == json_value_digest(json.loads(body))
+                    and json.loads(body).get("provider") == "omp"
+                )
+        except (OSError, json.JSONDecodeError, ValueError):
             return False
         return (
             value.get("managed_by") in {_MANAGED_BY, _LEGACY_MANAGED_BY}
@@ -185,22 +225,50 @@ class OmpAdapter(ProviderAdapter):
                 pass
 
     def launch_interactive(self, project_root: Path, **kwargs) -> int:
-        result = subprocess.run(["omp"], cwd=str(project_root), env=os.environ.copy(), **kwargs)
+        from provider.session_identity import scrub_inherited_session_identity
+        env = scrub_inherited_session_identity(os.environ)
+        env["PLAYBOOK_PROVIDER"] = "omp"
+        result = subprocess.run(["omp"], cwd=str(project_root), env=env, **kwargs)
         return result.returncode
+
+    def interactive_argv(self, *, prompt: str, model: Optional[str] = None,
+                         resume_session_id: Optional[str] = None) -> list[str]:
+        argv: list[str] = []
+        if resume_session_id:
+            argv.append(f"--resume={resume_session_id}")
+        if model:
+            argv += ["--model", model]
+        return [*argv, prompt]
 
     def launch_headless(self, project_root: Path, prompt: str, **kwargs) -> str:
         raise NotImplementedError("OMP headless integration is deferred to Phase B")
 
     def detect_capabilities(self) -> ProviderCapabilities:
+        supported = self.session_conformance().supported
         return ProviderCapabilities(
             provider="omp",
-            has_user_prompt_hook=True,
-            has_pre_tool_hook=True,
-            has_post_tool_hook=True,
+            has_user_prompt_hook=supported,
+            has_pre_tool_hook=supported,
+            has_post_tool_hook=supported,
             has_stop_hook=False,
-            session_id_in_payload=True,
+            session_id_in_payload=supported,
             session_log_format="none",
             session_log_base=None,
+        )
+
+    def session_conformance(self) -> SessionConformance:
+        extension, metadata = self._paths(self._project_root)
+        supported = self._owned_bridge(extension) and self._owned_metadata(metadata)
+        return declared_session_conformance(
+            "omp",
+            exact_resume=True,
+            resume_cwd="current project with omp --resume <native-id>",
+            supported=supported,
+            unsupported_reason=(
+                None
+                if supported
+                else "managed project OMP identity bridge is not installed"
+            ),
         )
 
     def session_log_path(self) -> Optional[Path]:

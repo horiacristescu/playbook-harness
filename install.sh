@@ -43,7 +43,7 @@ TRANSACTION_FILE=""
 LOCK_OWNED=false
 SWAP_ACTIVE=false
 TRANSACTION_OWNED=false
-PB_COMMANDS="pb-tasks pb-sandbox pb-codex pb-agy pb-pi pb-tmux-agent pb-arena"
+PB_COMMANDS="pb-tasks pb-sandbox pb-codex pb-agy pb-pi pb-session pb-tmux-agent pb-arena"
 SHIM_MARKER_PREFIX="# playbook-harness-managed-shim schema=1 root="
 SHIM_MARKER=""
 
@@ -725,6 +725,6 @@ STAGING_DIR=""
 test_fail_at after_runtime_publish
 write_shims
 
-printf '  Commands    %s/pb-tasks, pb-sandbox, pb-codex, pb-agy, pb-pi, pb-tmux-agent, pb-arena\n' "$BIN_DIR"
+printf '  Commands    %s/pb-tasks, pb-sandbox, pb-codex, pb-agy, pb-pi, pb-session, pb-tmux-agent, pb-arena\n' "$BIN_DIR"
 report_agents_and_path
 printf '\nNext: cd <project> && pb-tasks init\n'

@@ -1,75 +1,32 @@
 """Task management operations for .agent/tasks/ directories."""
 from __future__ import annotations
 
-import functools
 import os
 import re
-import subprocess
 from pathlib import Path
 
 VERSION = "1.3.5"
 
-AGENT_PROCESS_NAMES = frozenset({"claude", "codex", "agy", "pi"})
-
-
-@functools.lru_cache(maxsize=1)
-def find_agent_root_pid() -> int | None:
-    """Walk parent process tree, return PID of the highest agent ancestor.
-
-    Identifies claude/codex/agy/pi processes by `comm` (basename, no args).
-    Returns None if no agent found within 20 hops or if `ps` is unavailable.
-    Used as fallback when PLAYBOOK_SESSION_ID env var isn't propagated —
-    Python and bash both walk the same tree and converge on the same PID.
-    Result is cached: process tree is stable for the lifetime of this process.
-    """
-    pid = os.getppid()
-    last_agent_pid: int | None = None
-    for _ in range(20):
-        if pid in (0, 1):
-            break
-        try:
-            r = subprocess.run(
-                ["ps", "-p", str(pid), "-o", "ppid=,comm="],
-                capture_output=True, text=True, timeout=1,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            break
-        if r.returncode != 0 or not r.stdout.strip():
-            break
-        parts = r.stdout.strip().split(None, 1)
-        if len(parts) < 2:
-            break
-        try:
-            ppid = int(parts[0])
-        except ValueError:
-            break
-        comm = os.path.basename(parts[1].strip())
-        if comm in AGENT_PROCESS_NAMES:
-            last_agent_pid = pid
-        if ppid == pid:
-            break
-        pid = ppid
-    return last_agent_pid
-
-
 def resolve_session_id() -> str:
     """Resolve session_id used to namespace .agent/sessions/<id>/.
 
-    Order: PLAYBOOK_SESSION_ID env → native Codex thread ID → ancestor scan
-    (root agent PID) → immediate-parent PID. The ancestor scan is the robust path: it survives
-    env-propagation failures (VSCode CLAUDE_ENV_FILE quirks, missing wrappers,
-    subprocess loss). Bash hooks mirror this resolver in gate-echo-lib.sh.
+    Interactive commands use provider-native variables or an adapter-normalized
+    PLAYBOOK_SESSION_ID containing that same native value. Missing or ambiguous
+    identity is an error: PID/process ancestry is not conversation identity.
+    Bash hooks mirror this contract in gate-echo-lib.sh.
     """
-    sid = os.environ.get("PLAYBOOK_SESSION_ID", "")
-    if sid:
-        return sid
-    codex_thread = os.environ.get("CODEX_THREAD_ID", "")
-    if codex_thread:
-        return codex_thread
-    agent_pid = find_agent_root_pid()
-    if agent_pid is not None:
-        return f"pid-{agent_pid}"
-    return f"pid-{os.getppid()}"
+    from provider.session_identity import resolve_command_session_id
+
+    return resolve_command_session_id(os.environ)
+
+
+def resolve_session_key():
+    """Return the canonical provider-qualified interactive session key."""
+    from provider.session_identity import resolve_command_session_identity
+    from provider.session_state import SessionKey
+
+    identity = resolve_command_session_identity(os.environ)
+    return SessionKey.from_values(identity.provider, identity.session_id)
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
 
@@ -312,17 +269,13 @@ def create_task(project_path: Path, name: str, task_type: str | None = None,
 
 
 def _extract_status(task_file: Path) -> str:
-    """Extract status from task file (line after last ## Status)."""
+    """Extract the canonical status through the shared strict parser."""
     try:
-        lines = task_file.read_text(encoding="utf-8").splitlines()
-        status_idx = None
-        for i, line in enumerate(lines):
-            if line.strip() == "## Status":
-                status_idx = i
-        if status_idx is not None and status_idx + 1 < len(lines):
-            return lines[status_idx + 1].strip()
-        return "unknown"
-    except Exception:
+        from tasks.task_document import TaskDocument
+        return TaskDocument.parse(task_file.read_text(encoding="utf-8")).status
+    except Exception as exc:
+        if "missing ## Status" in str(exc):
+            return "unknown"
         return "error"
 
 
@@ -352,23 +305,15 @@ def _extract_problem(task_file: Path) -> str:
 def _extract_head_position(task_file: Path) -> str:
     """Find the first unchecked checkbox or empty required field."""
     try:
-        lines = task_file.read_text(encoding="utf-8").splitlines()
-        for line in lines:
-            stripped = line.strip()
-            # Unchecked checkbox
-            if stripped.startswith("- [ ]"):
-                return stripped[6:].strip()  # text after "- [ ] "
-            # Empty required field (line ending with : and nothing after)
-            if stripped.endswith(":") and stripped.startswith("- **"):
-                return stripped
-        return "(all gates checked)"
+        from tasks.task_document import TaskDocument
+        return TaskDocument.parse(task_file.read_text(encoding="utf-8")).head_position
     except Exception:
         return "(error reading)"
 
 
 def _is_done(task_file: Path) -> bool:
-    """Check if a task's status starts with 'done'."""
-    return _extract_status(task_file).startswith("done")
+    """Check if a task has the canonical closed status."""
+    return _extract_status(task_file) == "done"
 
 
 def _find_active_task(project_path: Path, name_filter: str = "") -> Path | None:
@@ -399,8 +344,11 @@ def task_done(project_path: Path, name_filter: str = "") -> dict:
     task_file = None
 
     agent_dir = resolve_agent_dir(project_path)
-    session_id = resolve_session_id()
-    state_files = [agent_dir / "sessions" / session_id / "current_state"]
+    from provider.session_state import ensure_session_record
+    from tasks.task_document import validate_task_claim, TaskDocumentError
+    key = resolve_session_key()
+    record, _ = ensure_session_record(agent_dir, key.provider, key.session_id)
+    state_files = [record.parent / "current_state"]
 
     for state_file in state_files:
         if not state_file.exists():
@@ -408,10 +356,10 @@ def task_done(project_path: Path, name_filter: str = "") -> dict:
         task_num = state_file.read_text(encoding="utf-8").strip()
         if not task_num:
             continue
-        matches = sorted((agent_dir / "tasks").glob(f"{task_num}-*/task.md"))
-        if not matches:
+        try:
+            candidate = validate_task_claim(agent_dir, key, task_num)
+        except TaskDocumentError:
             continue
-        candidate = matches[0]
         if name_filter and name_filter not in candidate.parent.name:
             continue
         if _is_done(candidate):
@@ -421,44 +369,15 @@ def task_done(project_path: Path, name_filter: str = "") -> dict:
             task_file = candidate
             break
 
-    if task_file is None:
-        task_file = _find_active_task(project_path, name_filter)
     if not task_file:
         return {"error": "No active task with open gates"}
 
     task_name = task_file.parent.name
-    lines = task_file.read_text(encoding="utf-8").splitlines()
-
-    # Find and check off the first unchecked gate
-    checked_text = None
-    checked_idx = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith("- [ ]"):
-            checked_text = stripped[6:].strip()
-            # Preserve original indentation, just flip the checkbox
-            lines[i] = line.replace("- [ ]", "- [x]", 1)
-            checked_idx = i
-            break
-
-    if checked_text is None:
-        return {"error": f"No unchecked gate in {task_name}"}
-
-    # Write back
-    task_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-    # Collect next gates (up to 3) after the one we just checked
-    upcoming = []
-    for line in lines[checked_idx + 1:]:
-        stripped = line.strip()
-        if stripped.startswith("- [ ]"):
-            upcoming.append(stripped[6:].strip())
-        elif stripped.endswith(":") and stripped.startswith("- **"):
-            upcoming.append(stripped)
-        else:
-            continue
-        if len(upcoming) >= 3:
-            break
+    from tasks.task_document import complete_next_gate
+    try:
+        checked_text, upcoming = complete_next_gate(task_file, key)
+    except TaskDocumentError as exc:
+        return {"error": str(exc)}
 
     return {
         "task_name": task_name,
@@ -471,16 +390,34 @@ def task_done(project_path: Path, name_filter: str = "") -> dict:
 def _extract_progress(task_file: Path) -> str:
     """Count checked/total checkboxes in a task file."""
     try:
-        content = task_file.read_text(encoding="utf-8")
-        checked = content.count("- [x]") + content.count("- [X]")
-        total = checked + content.count("- [ ]")
+        from tasks.task_document import TaskDocument
+        checked, total = TaskDocument.parse(
+            task_file.read_text(encoding="utf-8")
+        ).progress
         return f"{checked}/{total}" if total > 0 else "-"
     except Exception:
         return "-"
 
 
-def list_tasks(project_path: Path, pending_only: bool = False) -> None:
-    """List all tasks with their status and intent."""
+def _task_owner_text(task_file: Path) -> str:
+    """Compact task→native-session handle for human-facing tables."""
+    from tasks.task_document import TaskDocument, TaskDocumentError
+    try:
+        document = TaskDocument.parse(task_file.read_text(encoding="utf-8"))
+        owner = document.live_owner
+    except (OSError, TaskDocumentError):
+        return "!invalid"
+    if owner is None:
+        return "-"
+    return f"{owner.provider}:{owner.session_id}"
+
+
+def list_tasks(
+    project_path: Path,
+    pending_only: bool = False,
+    recent_only: bool = False,
+) -> None:
+    """List tasks with their status, owner, progress, and intent."""
     tasks_dir = resolve_agent_dir(project_path) / "tasks"
 
     if not tasks_dir.exists():
@@ -493,8 +430,12 @@ def list_tasks(project_path: Path, pending_only: bool = False) -> None:
         print("No tasks found")
         return
 
+    if recent_only:
+        task_files = task_files[-3:]
+
     status_w = 7
     progress_w = 8
+    owner_w = len("Owner")
     intent_w = 500
 
     # Collect rows first to compute dynamic name column width
@@ -516,22 +457,24 @@ def list_tasks(project_path: Path, pending_only: bool = False) -> None:
 
         intent = _extract_problem(task_file)
         progress = _extract_progress(task_file)
+        owner = _task_owner_text(task_file)
+        owner_w = max(owner_w, len(owner))
 
         if len(intent) > intent_w:
             intent = intent[:intent_w-1] + "…"
         if len(status) > status_w:
             status = status[:status_w]
 
-        rows.append((name, status, progress, intent))
+        rows.append((name, status, progress, owner, intent))
 
     name_w = max((len(r[0]) for r in rows), default=4)
     name_w = max(name_w, 4)  # at least wide enough for "Name"
 
-    print(f"{'Name':<{name_w}} | {'Status':<{status_w}} | {'Progress':<{progress_w}} | Intent")
-    print(f"{'-'*name_w}-+-{'-'*status_w}-+-{'-'*progress_w}-+-{'-'*intent_w}")
+    print(f"{'Name':<{name_w}} | {'Status':<{status_w}} | {'Progress':<{progress_w}} | {'Owner':<{owner_w}} | Intent")
+    print(f"{'-'*name_w}-+-{'-'*status_w}-+-{'-'*progress_w}-+-{'-'*owner_w}-+-{'-'*intent_w}")
 
-    for name, status, progress, intent in rows:
-        print(f"{name:<{name_w}} | {status:<{status_w}} | {progress:<{progress_w}} | {intent}")
+    for name, status, progress, owner, intent in rows:
+        print(f"{name:<{name_w}} | {status:<{status_w}} | {progress:<{progress_w}} | {owner:<{owner_w}} | {intent}")
 
     print("")
     parts = []
@@ -544,6 +487,8 @@ def list_tasks(project_path: Path, pending_only: bool = False) -> None:
     summary = f"Summary: {', '.join(parts)}"
     if pending_only:
         summary += f" (showing {len(rows)} open)"
+    elif recent_only:
+        summary += f" (showing {len(rows)} most recent)"
     print(summary)
     print("Task files: .agent/tasks/<name>/task.md — activate with: pb-tasks work <number>")
 
@@ -572,4 +517,5 @@ def task_status(project_path: Path) -> None:
         head = _extract_head_position(task_file)
         progress = _extract_progress(task_file)
 
-        print(f"{name:<40} | {progress:<8} | {head}")
+        owner = _task_owner_text(task_file)
+        print(f"{name:<40} | {progress:<8} | {owner:<48} | {head}")

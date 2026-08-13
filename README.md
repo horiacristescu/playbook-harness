@@ -78,7 +78,7 @@ that manual merging is required.
 
 | Provider | Project-local result | Current limit |
 | --- | --- | --- |
-| Claude Code | `CLAUDE.md`, `.claude/settings.local.json`, `.claude/.gitignore`, managed skills and commands | Bare terminal/IDE launch; warns if old Marketplace hooks may duplicate standalone hooks. |
+| Claude Code | `CLAUDE.md`, `.claude/settings.local.json`, `.claude/.gitignore`, managed skills and commands | Bare terminal/IDE launch; recognized old Marketplace hooks migrate, while ambiguous/global legacy state is reported as incomplete. |
 | Codex | `AGENTS.md`, `.codex/hooks.json` | Codex must have `[features] hooks = true`; init reads but never edits `~/.codex/config.toml`. |
 | OMP | `AGENTS.md`, `.omp/extensions/playbook.ts`, `.omp/playbook.json` | Bare `omp` is enforced only when launched at the project root. `omp --no-extensions` is the emergency bypass. |
 | Pi | `AGENTS.md`, `.agent/pi/config/models.json`, `.agent/pi/sessions/` | Launch with `pb-pi`; the wrapper supplies extension loading and isolated project state. |
@@ -100,6 +100,9 @@ pb-tasks doctor                       # project/harness diagnostics
 pb-tasks runtime-audit                # verify installed artifact integrity
 pb-tasks runtime-info                 # authoritative runtime schema + Git commit
 pb-sandbox --prompt "..." --agent codex
+pb-session                            # start the default provider in managed tmux
+pb-session list                       # recorded lifecycle and observed body state
+pb-session status <name-or-native-id> # exact manual resume route after interruption
 pb-tmux-agent start reviewer codex -- --help
 pb-arena case list                     # inspect portable historical cases
 pb-arena canary list                   # inspect shipped network-free canaries
@@ -110,14 +113,36 @@ colliding with system commands. Bare Claude, Codex, and root-launched OMP use
 their project-local integrations; use a wrapper only where it adds documented
 session, sandbox, model, or extension behavior.
 
+`pb-session` composes provider-native conversation identity with an optional
+human name and one managed tmux body. A zero-argument launch uses the saved
+project provider (Codex by default) and attaches; direct provider launches remain
+supported and bootstrap records them as ad-hoc sessions. `list` and `status`
+separate durable lifecycle from live-body observation and print an exact resume
+route, so a reboot does not require remembering which conversations were open.
+The session record is orientation state, not a transcript or automatic process
+resurrection.
+
+For a managed fleet, ask one ordinary Playbook session to monitor the others.
+Project initialization places the `monitor` skill in each selected provider's
+configured project skill path from canonical `skills/monitor/`. It teaches the agent to inventory, inspect,
+and steer through `pb-session`; distinguish recorded, observed, sent,
+acknowledged, and acted-on evidence; respect task authority; and leave healthy
+work alone. Monitoring adds no daemon, private state tree, transcript scraper,
+or special agent identity. Project-specific assignment and approval rules remain
+ordinary operator-supplied Markdown.
+
 `pb-tmux-agent` is an optional persistent execution transport. It requires
 `tmux` on `PATH`, but project initialization creates no tmux state and does not
-change tmux configuration. Runs, logs, and results live under the XDG state
-directory rather than inside a project:
+change the user's ordinary tmux server or configuration. Managed bodies use a
+separate Playbook-owned tmux server; runs, logs, and results live under the XDG
+state directory rather than inside a project:
 
 ```bash
 pb-tmux-agent start reviewer command -- python3 -u -c 'print(input())'
 pb-tmux-agent send reviewer "review this change"
+pb-tmux-agent peek reviewer 50
+pb-tmux-agent attach reviewer             # from an ordinary, non-tmux terminal
+pb-tmux-agent detach reviewer
 pb-tmux-agent tail reviewer 50
 pb-tmux-agent wait reviewer --timeout 30
 pb-tmux-agent stop reviewer
@@ -125,7 +150,11 @@ pb-tmux-agent stop reviewer
 
 Use `--namespace` to isolate campaigns and `--json` for controllers. Run
 `pb-tmux-agent --help` for provider, working-directory, environment, and model
-options. Hostile descendant containment remains the job of `pb-sandbox`.
+options. Each body is exactly one session/window/pane; readiness follows
+successful foreground exec, pane resize reaches the child, wheel events stay in
+tmux scrollback, and dead panes retain exact exit evidence. Cleanup owns the
+foreground process group only. A child that escapes with `setsid()` is outside
+that group, so hostile descendant containment remains the job of `pb-sandbox`.
 
 `pb-arena` reconstructs Git-pinned historical project moments for evaluation without
 touching live project worktrees. Cases bind logical source IDs explicitly, verify
@@ -186,13 +215,16 @@ or accepts it as an upgrade origin.
    pb-tasks init
    ```
 
-   Init preserves `.agent/` tasks, sessions, chat history, `MIND_MAP.md`, and
-   user-authored guidance. It refreshes only recognized Playbook-managed local
-   hooks/assets for every supported agent detected on the machine. If guidance
-   still uses `.claude/bin/tasks` or `.claude/bin/sandbox`, init preserves the
-   original and creates a current `pb-*` proposal under `.agent/templates/`.
-3. Verify the standalone runtime with `pb-tasks runtime-audit` and launch Claude
-   in the project to confirm the local settings are active.
+   Init preserves `.agent/` tasks, sessions, chat history, `MIND_MAP.md`, custom
+   playbooks, user-authored guidance, and foreign hooks. It atomically replaces
+   exact generated Marketplace launchers and Playbook hook entries with the
+   standalone forms. Semantic guidance is preserved and receives a current
+   `pb-*` proposal under `.agent/templates/` when automatic adoption is unsafe.
+   An ambiguous active legacy dependency makes init return nonzero before any
+   project write; resolve the reported surface and rerun init.
+3. Run `pb-tasks doctor` in the project and `pb-tasks runtime-audit` from any
+   directory. Doctor classifies project migration state; runtime-audit checks
+   only the immutable serving runtime.
 4. Remove the old plugin and Marketplace declaration:
 
    ```bash
@@ -200,13 +232,12 @@ or accepts it as an upgrade origin.
    claude plugin marketplace remove claude-playbook-marketplace
    ```
 
-Project files and task history are retained. If init reports possible duplicate
-legacy hooks, remove only the old Playbook hook entries after verifying the new
-local integration; never delete unrelated Claude hooks. Obsolete project-local
-`.claude/bin/tasks` and `.claude/bin/sandbox` copies may be removed after all
-guidance uses `pb-*`. Re-running init later is safe and adds local integration
-for newly installed supported agents without scanning other projects or changing
-global provider settings.
+Project files and task history are retained. Exact generated project-local
+`.claude/bin/tasks` and `.claude/bin/sandbox` launchers remain as compatibility
+shims to `pb-tasks` and `pb-sandbox`; modified scripts remain foreign and require
+manual resolution. Re-running init is a no-write fixed point after convergence
+and can add integration for newly installed supported agents without scanning
+other projects or changing global provider settings.
 
 ## Troubleshooting
 

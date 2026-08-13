@@ -1,5 +1,93 @@
 # Playbook Harness release notes
 
+## Narrative, natural gate editing, and migration repair — 2026-08-13
+
+This release adds `pb-tasks narrative` and the `/narrative` skill. Agents author
+incremental arcs and spans over project chat history; the CLI validates exact
+`(timestamp, id)` boundaries and renders a local, self-contained page for the
+user. Existing annotations remain hand-editable project meaning, while HTML and
+parsed entries are derived and ignored. Narrative is deliberately one
+observability lens—not a substitute for live session state, executable
+provenance, or task authority.
+
+Gate completion again uses ordinary provider file edits. Hooks validate that
+only the authoritative first open gate advances, publish the transition, and
+inject the next exact `task.md:line`; the short-lived agent-facing `task-edit`
+command has been removed. Codex task closure now checkpoints authorized edits
+before removing active ownership, preventing same-turn Stop hooks from
+retroactively calling valid work unowned.
+
+Standalone migration now distinguishes executable Marketplace consumers from
+permission history, archived logs, and independent Claude worktrees. It still
+refuses enabled legacy plugins and ambiguous live wiring before writes. Claude
+startup and task hooks share provider-native UUID identity, and fresh managed
+sessions surface interactive trust or hook-review prompts instead of silently
+waiting. `pb-tasks doctor`, runtime generation reporting, named `pb-session`
+status, and public-artifact audits expose the serving runtime and require the
+Narrative instruction, implementation, and help surface to ship together.
+
+## Tmux fleet-monitor skill and legacy retirement — 2026-08-12
+
+The public artifact now ships one canonical `monitor` skill to every supported
+provider integration's configured project skill path. One ordinary managed session can use
+public `pb-session` and `pb-tasks` facts to observe and steer a fleet without a
+special identity or control plane. The skill separates recorded lifecycle,
+observed pane evidence, sent text, recipient acknowledgment, and demonstrated
+action; silence is neither idleness nor completion, and task authority outranks
+informal pane or plan claims.
+
+The unused conversation-watcher implementation, copied project runtime, hook,
+launcher, private state tree, and documentation corpus are no longer current or
+public surfaces. Project initialization transactionally retires only exact
+authenticated legacy launcher/hook/settings wiring. Modified files, foreign
+hooks, task history, and recipient-authored data are preserved; ambiguous
+active state refuses before writes. Clean and T120/T121 recipient fixtures reach
+a byte-stable second init, and fresh-agent plus live three-worker tmux probes
+exercise restraint, acknowledgment, retained exit evidence, and manual resume
+orientation.
+
+## Provider-native Playbook sessions — 2026-08-12
+
+The standalone artifact now ships `pb-session`. It starts a supported provider
+inside the existing tmux transport, binds the resulting provider-native
+conversation ID to a durable Playbook record, and supports list, status, attach,
+peek, send, exact resume, stop, rename, and destroy. Bare provider launches stay
+valid: bootstrap records the same native identity as an ad-hoc session.
+
+Session status distinguishes recorded lifecycle, observed tmux-body truth, task
+authority, and sparse chat chronology. It retains the exact manual resume route
+without storing another transcript or automatically resurrecting processes.
+
+The public runtime now includes the complete session command and hook closure.
+Project init recognizes exact Marketplace-era launchers and Playbook hook
+entries, migrates them in one transaction, preserves foreign hooks, semantic
+guidance, custom playbooks, and history, and refuses ambiguous active legacy
+state before writing. Doctor inspects project migration state and the serving
+runtime; runtime-audit remains project-independent. Immutable clean and
+plugin-era recipient fixtures pass two init runs, doctor, runtime-audit, and
+installed native-identity canaries for Claude, Codex, Agy, Pi, and OMP.
+Legacy hook migration authenticates the complete frozen entry shape, and direct
+consumer detection is limited to concrete runtime commands on operational
+surfaces. Explicit Claude `enabledPlugins` activation blocks migration;
+installation records and historical prose do not. Reconciliation revalidates
+target bytes immediately before staging and replacement, and rollback never
+overwrites a concurrently changed managed postimage.
+
+## Interactive tmux substrate hardening — 2026-08-12
+
+`pb-tmux-agent` now preserves the pane controlling terminal while giving the
+interactive child its own foreground process group, so live resize and bounded
+runner-authoritative cleanup coexist. Managed bodies use an isolated,
+authenticated Playbook tmux server with one session/window/pane and wheel
+bindings that operate tmux copy mode without forwarding to provider history.
+
+Start waits for successful foreground exec. New `attach`, `detach`, and `peek`
+commands complement serialized literal send plus separate Enter. Dead panes and
+unexpected runner exits publish immutable status for later inspection;
+ownership, topology, socket, and name mismatches refuse without collateral
+cleanup. Tmux owns the foreground process group, not hostile `setsid()` escapes;
+`pb-sandbox` remains the containment boundary.
+
 ## Interactive historical arena — 2026-08-09
 
 Added frozen script/rubric/variant/campaign schemas, balanced opaque assignment,

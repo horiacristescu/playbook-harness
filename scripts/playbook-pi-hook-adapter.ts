@@ -79,9 +79,42 @@ function findProjectRoot(start: string): string | undefined {
   return undefined;
 }
 
-function sessionId(): string {
-  if (process.env.PLAYBOOK_SESSION_ID) return process.env.PLAYBOOK_SESSION_ID;
-  return `pid-${process.pid}`;
+type SessionContext = {
+  sessionManager?: { getSessionId?: () => unknown };
+};
+
+function sessionId(ctx: SessionContext): string | undefined {
+  const value = ctx.sessionManager?.getSessionId?.();
+  if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function bindSessionIdentity(projectRoot: string, ctx: SessionContext): string | undefined {
+  const value = sessionId(ctx);
+  const provider = providerName(projectRoot);
+  if (!value || !provider) return undefined;
+  // Pi/OMP's Bash tools are spawned after callbacks. Refreshing process.env on
+  // every callback makes their ctx-native session ID the exact command
+  // transport and overwrites any stale parent/wrapper value.
+  delete process.env.CLAUDE_CODE_SESSION_ID;
+  delete process.env.CODEX_THREAD_ID;
+  delete process.env.ANTIGRAVITY_CONVERSATION_ID;
+  process.env.PLAYBOOK_SESSION_ID = value;
+  process.env.PLAYBOOK_PROVIDER = provider;
+  process.env.PLAYBOOK_BRIDGE_PROVIDER = provider;
+  return value;
+}
+
+function bindBashCommand(event: ToolCallEvent, nativeSessionId: string, provider: string): void {
+  if (event.toolName !== "bash" || typeof event.input.command !== "string") return;
+  event.input.command =
+    "unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID ANTIGRAVITY_CONVERSATION_ID; "
+    + `export PLAYBOOK_SESSION_ID='${nativeSessionId}'; `
+    + `export PLAYBOOK_PROVIDER='${provider}'; `
+    + `export PLAYBOOK_BRIDGE_PROVIDER='${provider}'; `
+    + event.input.command;
 }
 
 function readMetadata(projectRoot: string): PlaybookMetadata | undefined {
@@ -130,8 +163,10 @@ export function resolveHookDir(projectRoot: string): string | undefined {
 
 export function providerName(projectRoot: string): string | undefined {
   if (EMBEDDED_PROVIDER) return EMBEDDED_PROVIDER;
-  const provider = process.env.PLAYBOOK_PROVIDER || readMetadata(projectRoot)?.provider;
-  return provider === "pi" || provider === "omp" ? provider : undefined;
+  const explicitProvider = process.env.PLAYBOOK_PROVIDER;
+  if (explicitProvider === "pi" || explicitProvider === "omp") return explicitProvider;
+  const metadataProvider = readMetadata(projectRoot)?.provider;
+  return metadataProvider === "omp" ? metadataProvider : undefined;
 }
 
 function hookTimeoutMs(): number {
@@ -231,12 +266,13 @@ function normalizeToolInput(event: ToolCallEvent | ToolResultEvent, cwd: string)
 
 function hookPayload(
   hookEventName: string,
+  nativeSessionId: string,
   cwd: string,
   extra: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     hook_event_name: hookEventName,
-    session_id: sessionId(),
+    session_id: nativeSessionId,
     cwd,
     ...extra,
   };
@@ -246,6 +282,7 @@ function runHook(
   projectRoot: string,
   scriptName: string,
   payload: Record<string, unknown>,
+  nativeSessionId: string,
 ): Promise<HookResult> {
   const provider = providerName(projectRoot);
   if (!provider) {
@@ -267,7 +304,8 @@ function runHook(
   const env = {
     ...process.env,
     PLAYBOOK_PROVIDER: provider,
-    PLAYBOOK_SESSION_ID: sessionId(),
+    PLAYBOOK_BRIDGE_PROVIDER: provider,
+    PLAYBOOK_SESSION_ID: nativeSessionId,
     PLAYBOOK_PROJECT_ROOT: projectRoot,
     // Pi invokes the central script directly; OMP goes through pb-tasks,
     // which overwrites this with its own trusted checkout root.
@@ -351,7 +389,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const projectRoot = findProjectRoot(ctx.cwd);
     if (!projectRoot) return;
-    const result = await runHook(projectRoot, "session-start-hook", hookPayload("SessionStart", ctx.cwd, {}));
+    const nativeId = bindSessionIdentity(projectRoot, ctx);
+    if (!nativeId) return diagnostic("native session ID unavailable; session hooks disabled");
+    const result = await runHook(projectRoot, "session-start-hook", hookPayload("SessionStart", nativeId, ctx.cwd, {}), nativeId);
     const failure = hookFailure(result, "session-start-hook");
     if (failure) diagnostic(`${failure}. ${repairMessage(projectRoot)}`);
     else if (providerName(projectRoot) === "omp") diagnostic("active (omp; project-root discovery)");
@@ -360,10 +400,16 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", async (event, ctx) => {
     const projectRoot = findProjectRoot(ctx.cwd);
     if (!projectRoot) return { action: "continue" };
+    const nativeId = bindSessionIdentity(projectRoot, ctx);
+    if (!nativeId) {
+      diagnostic("native session ID unavailable; prompt not logged");
+      return { action: "continue" };
+    }
     const result = await runHook(
       projectRoot,
       "chat-log-hook",
-      hookPayload("UserPromptSubmit", ctx.cwd, { prompt: event.text }),
+      hookPayload("UserPromptSubmit", nativeId, ctx.cwd, { prompt: event.text }),
+      nativeId,
     );
     const failure = hookFailure(result, "chat-log-hook");
     if (failure) diagnostic(failure);
@@ -373,14 +419,24 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     const projectRoot = findProjectRoot(ctx.cwd);
     if (!projectRoot) return;
+    const nativeId = bindSessionIdentity(projectRoot, ctx);
+    if (!nativeId) {
+      if (MUTATING_TOOLS.has(event.toolName)) {
+        return { block: true, reason: "Playbook native session identity unavailable" };
+      }
+      diagnostic("native session ID unavailable; allowing nonmutating tool");
+      return;
+    }
+    bindBashCommand(event, nativeId, providerName(projectRoot)!);
 
     const result = await runHook(
       projectRoot,
       "task-gate-hook",
-      hookPayload("PreToolUse", ctx.cwd, {
+      hookPayload("PreToolUse", nativeId, ctx.cwd, {
         tool_name: TOOL_NAME_MAP[event.toolName] || event.toolName,
         tool_input: normalizeToolInput(event, ctx.cwd),
       }),
+      nativeId,
     );
 
     applyUpdatedInput(event, result.stdout);
@@ -406,11 +462,13 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_result", async (event, ctx) => {
     const projectRoot = findProjectRoot(ctx.cwd);
     if (!projectRoot) return;
+    const nativeId = bindSessionIdentity(projectRoot, ctx);
+    if (!nativeId) return diagnostic("native session ID unavailable; gate echo skipped");
 
     const result = await runHook(
       projectRoot,
       "state-echo-hook",
-      hookPayload("PostToolUse", ctx.cwd, {
+      hookPayload("PostToolUse", nativeId, ctx.cwd, {
         tool_name: TOOL_NAME_MAP[event.toolName] || event.toolName,
         tool_input: normalizeToolInput(event, ctx.cwd),
         tool_result: {
@@ -418,6 +476,7 @@ export default function (pi: ExtensionAPI) {
           content: event.content,
         },
       }),
+      nativeId,
     );
 
     const context = additionalContext(result.stdout);
@@ -435,7 +494,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, ctx) => {
     const projectRoot = findProjectRoot(ctx.cwd);
     if (!projectRoot) return;
-    const result = await runHook(projectRoot, "session-end-hook", hookPayload("SessionEnd", ctx.cwd, {}));
+    const nativeId = bindSessionIdentity(projectRoot, ctx);
+    if (!nativeId) return diagnostic("native session ID unavailable; no cleanup performed");
+    const result = await runHook(projectRoot, "session-end-hook", hookPayload("SessionEnd", nativeId, ctx.cwd, {}), nativeId);
     const failure = hookFailure(result, "session-end-hook");
     if (failure) diagnostic(failure);
   });

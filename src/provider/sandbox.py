@@ -517,25 +517,61 @@ def _wrapped_argv(
     foreign one we can't nest in), returns the inner argv with bypass flags only.
     """
     inner_argv = _compose_agent_argv(agent, agent_args)
+    return wrap_command_argv(
+        inner_argv,
+        project,
+        extra_rw=extra_rw,
+        project_writable=project_writable,
+    )
+
+
+def wrap_command_argv(
+    target_argv: list[str],
+    project_root: Path | str,
+    *,
+    extra_rw: Iterable[str] | None = None,
+    project_writable: bool = True,
+) -> list[str]:
+    """Apply Playbook containment to an already exact command argv.
+
+    Managed interactive sessions use provider wrappers for identity/hooks, so
+    they cannot route through ``_compose_agent_argv`` (which selects raw
+    binaries). The caller owns provider permission-bypass arguments; this
+    function owns only seatbelt/bwrap containment.
+    """
+
+    if not target_argv:
+        raise ValueError("sandbox target argv may not be empty")
+    project = Path(project_root).resolve()
     if is_sandboxed():
-        return inner_argv
+        return list(target_argv)
     if platform.system() == "Darwin" and shutil.which("sandbox-exec"):
         if _seatbelt_usable():
             git_dir = _git_dir_of(project)
             profile = build_seatbelt_profile(project, git_dir, extra_rw, project_writable=project_writable)
-            return ["sandbox-exec", "-p", profile, *inner_argv]
+            return ["sandbox-exec", "-p", profile, *target_argv]
         # Nested in a foreign sandbox (macOS forbids sandbox-exec nesting, rc 71).
         _warn_nested_once()
-        return inner_argv
+        return list(target_argv)
     if shutil.which("bwrap"):
         git_dir = _git_dir_of(project)
-        return build_bwrap_argv(project, git_dir, inner_argv, extra_rw, project_writable=project_writable)
+        return build_bwrap_argv(project, git_dir, target_argv, extra_rw, project_writable=project_writable)
     # No sandbox primitive available — exec directly with bypass.
-    return inner_argv
+    return list(target_argv)
 
 
-def _child_env(env: dict[str, str] | None) -> dict[str, str]:
-    child_env = dict(os.environ) if env is None else dict(env)
+def _child_env(env: dict[str, str] | None, agent: str) -> dict[str, str]:
+    if env is None:
+        # Interactive `pb-sandbox --agent ...` is also an agent launcher. A
+        # nested child must not inherit the parent conversation identity.
+        from .session_identity import scrub_inherited_session_identity
+
+        child_env = scrub_inherited_session_identity(os.environ)
+        child_env["PLAYBOOK_PROVIDER"] = agent
+    else:
+        # Programmatic/headless callers supply deliberate ephemeral identity
+        # (for example the judge seat), so preserve their explicit environment.
+        child_env = dict(env)
     child_env["PLAYBOOK_SANDBOXED"] = "1"
     return child_env
 
@@ -557,7 +593,7 @@ def run(
     nest in), skips wrapping but still injects bypass flags.
     """
     project = Path(project_root).resolve()
-    child_env = _child_env(env)
+    child_env = _child_env(env, agent)
     wrapped = _wrapped_argv(agent, agent_args, project, extra_rw, project_writable)
 
     return subprocess.run(
@@ -587,7 +623,7 @@ def popen(
     iterate `proc.stdout`; override via kwargs.
     """
     project = Path(project_root).resolve()
-    child_env = _child_env(env)
+    child_env = _child_env(env, agent)
     wrapped = _wrapped_argv(agent, agent_args, project, extra_rw, project_writable)
 
     kwargs.setdefault("stdout", subprocess.PIPE)

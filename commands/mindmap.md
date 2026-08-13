@@ -2,6 +2,7 @@
 description: Generate a mind map by analyzing the current codebase
 allowed-tools: [Read, Write, Edit, Bash, Glob, Grep]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/mindmap.md","source_hash":"dd4e769346fe9ab08060549778a84809d320d7b1b0e1865b517fdea2c8d23744"} -->
 
 Generate a populated `MIND_MAP.md` for this project. Work directly — no Task agents — so the user can steer between steps.
 

@@ -1,11 +1,11 @@
 #!/bin/bash
-# pb-codex — launch Codex with a unique per-session Playbook session ID.
+# pb-codex — launch Codex without inheriting another agent's identity.
 #
 # Usage: pb-codex [codex-args...]
 #
-# Generates PLAYBOOK_SESSION_ID, provisions the session directory, then execs
-# codex so the agent inherits the env.  AGENTS.md in the project root tells
-# the Codex agent to run `pb-tasks bootstrap` as its first action.
+# Codex itself owns the durable thread ID. The wrapper only establishes project
+# and provider context; hooks and commands read Codex's native `session_id` /
+# `CODEX_THREAD_ID`. AGENTS.md tells the agent to bootstrap first.
 #
 # Canonical user-facing entry point.  See src/provider/adapters/codex.py
 # launch_interactive() for the programmatic equivalent (assumes env pre-set).
@@ -25,15 +25,10 @@ fi
 
 PROJECT_ROOT="$(find_project_root)"
 
-# PID-based session ID: pid-$$ (this wrapper's PID = parent of codex process)
-SESSION_ID="pid-$$"
-export PLAYBOOK_SESSION_ID="$SESSION_ID"
+# A nested agent must not inherit the parent's provider or normalized identity.
+unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
+    ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE
+export PLAYBOOK_PROVIDER="codex"
 export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
-
-# Provision session directory so state files have a home
-if [ -n "$PROJECT_ROOT" ]; then
-    AGENT_DIR="$(resolve_agent_dir "$PROJECT_ROOT")"
-    mkdir -p "$AGENT_DIR/sessions/$SESSION_ID"
-fi
 
 exec codex "$@"

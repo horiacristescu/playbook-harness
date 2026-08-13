@@ -86,23 +86,38 @@ def evaluate_tool_call(
     """
     Evaluate a tool call before it executes.
 
-    Called from: PreToolUse hook (Claude only today).
-
-    NOT called for Codex (no scriptable pre-tool hook — prefix_rule approval
-    only) or agy (hook model unverified). If called for a provider where
-    caps.has_pre_tool_hook is False, return Decision.skip().
-
-    Current policy stub — full logic lives in task-gate-hook bash until T112:
-        - If no active task and tool touches a code file: block.
-        - Otherwise: allow.
-
-    The bash hook (task-gate-hook) is the authoritative implementation today.
-    This stub defines the intended Python interface for T112 wiring.
+    Called by provider-native structured pre-tool bridges. Providers without
+    that capability return Decision.skip(); their shell boundary is owned by
+    sandbox containment, not by this admission decision.
     """
     if not caps.has_pre_tool_hook:
         return Decision.skip()
 
     code_tools = {"Edit", "Write", "MultiEdit"}
+    if event.tool_name in code_tools and facts.authority_error:
+        return Decision.block(f"Playbook task authority mismatch: {facts.authority_error}")
+    if event.tool_name in code_tools and _is_task_control_path(event.file_path):
+        if facts.active_task_path is None:
+            return Decision.block(
+                "Task-control edits require an authoritative session claim. "
+                "Run `pb-tasks work <N>` first."
+            )
+        import os
+        target = os.path.realpath(event.file_path)
+        active = os.path.realpath(facts.active_task_path)
+        if target != active:
+            return Decision.block(
+                f"Task-control edit targets {target}, but this session owns {active}."
+            )
+        try:
+            from pathlib import Path
+            from tasks.gate_edit import GateEditError, validate_structured_task_edit
+            validate_structured_task_edit(
+                Path(active), event.tool_name, event.tool_input
+            )
+        except (OSError, GateEditError) as exc:
+            return Decision.block(str(exc))
+        return Decision.allow()
     if event.tool_name in code_tools and facts.active_task_number is None:
         # Allow edits to task-management directories without an active task
         if _is_management_path(event.file_path):
@@ -121,6 +136,17 @@ def _is_management_path(file_path: str) -> bool:
     norm = file_path.replace("\\", "/")
     parts = norm.split("/")
     return ".agent" in parts or ".claude" in parts
+
+
+def _is_task_control_path(file_path: str) -> bool:
+    norm = file_path.replace("\\", "/")
+    parts = [part for part in norm.split("/") if part]
+    return (
+        len(parts) >= 4
+        and parts[-1] == "task.md"
+        and parts[-3] == "tasks"
+        and parts[-4] == ".agent"
+    )
 
 
 def _is_code_file_path(file_path: str) -> bool:

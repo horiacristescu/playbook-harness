@@ -8,8 +8,8 @@ PreToolUse: refuse code edits when no task is active (Claude-policy parity via
   Codex wraps the stderr text into the model's tool_call_output as
   "Command blocked by PreToolUse hook: <reason>. Command: <patch>".
 
-PostToolUse: emit `additionalContext` with the first-unchecked-gate text
-  (mirror of `state-echo-hook`, scoped per W3 — see task 123 / parked items).
+PostToolUse: after apply_patch, publish gate chronology and emit the current
+  authoritative gate as `additionalContext`.
 
 Fail-open: any internal error → exit 0 with no output. A parser bug must not
   brick Codex.
@@ -20,13 +20,6 @@ Sentinel for V1/V2 probes: when env var
 """
 
 from __future__ import annotations
-
-# Skip when invoked from the monitor's own claude session.
-import os as _os
-import sys as _sys
-if _os.environ.get("PLAYBOOK_ROLE") == "monitor":
-    print(f"[{__file__.rsplit('/', 1)[-1]}] skip (PLAYBOOK_ROLE=monitor)", file=_sys.stderr)
-    _sys.exit(0)
 
 import json
 import os
@@ -45,10 +38,8 @@ def _bootstrap_imports() -> None:
 
 def _find_project_root() -> Path:
     env_root = os.environ.get("PLAYBOOK_PROJECT_ROOT")
-    if env_root:
-        return Path(env_root)
     from provider.codex_hooks import find_project_root
-    return find_project_root(Path.cwd())
+    return find_project_root(Path.cwd(), Path(env_root) if env_root else None)
 
 
 def _write_sentinel(event: str) -> None:
@@ -78,17 +69,20 @@ def main() -> int:
         # tool call on a parser glitch is worse than a silent allow.
         return 0
 
-    _write_sentinel(event or "unknown")
-
     try:
         _bootstrap_imports()
         from provider.codex_hooks import (
             apply_patch_post_context,
             apply_patch_pre_decision,
-            resolve_session_id,
+            session_state_dir,
         )
+        from provider.session_identity import hook_session_id
         project_root = _find_project_root()
-        session_id = resolve_session_id()
+        session_id = hook_session_id("codex", payload, os.environ)
+        session_state_dir(project_root, session_id)
+        # Even the diagnostic sentinel is a mutation. Do not write it until the
+        # provider-native hook identity and state boundary have been validated.
+        _write_sentinel(event or "unknown")
 
         if event == "PreToolUse":
             decision = apply_patch_pre_decision(payload, project_root, session_id)

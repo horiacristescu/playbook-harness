@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 from .policy import _is_code_file_path, _is_management_path
+from .session_state import ensure_session_record
 from tasks.core import resolve_agent_dir, resolve_session_id as _resolve_shared_session_id
 
 HOOK_TIMEOUT_MS = 5000
@@ -107,9 +108,6 @@ def parse_patch_paths(command: str) -> ParseResult:
     return ParseResult(paths=paths, had_headers=had_headers)
 MISSING_FILE_DIGEST = "__MISSING__"
 SESSION_BASELINE_KEY = "__session__"
-_CHAT_LOG_HEADER = "# Project Chat Log\n\nUser messages logged with timestamps.\n\n"
-_OLD_CHAT_HEADER_RE = re.compile(r"^\*\*\[([0-9-]{10} [0-9:]{8} UTC)\]\*\*(.*)$")
-_NEW_CHAT_HEADER_RE = re.compile(r"^\*\*\[M(\d{3,})\]\*\* ")
 
 
 def resolve_session_id() -> str:
@@ -117,15 +115,30 @@ def resolve_session_id() -> str:
     return _resolve_shared_session_id()
 
 
-def find_project_root(start: Path) -> Path:
-    """Find legacy or multi-user Playbook state from a nested Codex cwd."""
-    for candidate in (start.resolve(), *start.resolve().parents):
+def find_project_root(start: Path, declared_root: Path | None = None) -> Path:
+    """Find Playbook state without trusting an unrelated inherited root.
+
+    Managed launches declare ``PLAYBOOK_PROJECT_ROOT``, but a provider started
+    from another agent can inherit that agent's environment.  The declaration
+    is authoritative only while the hook cwd remains inside it; otherwise the
+    native child session discovers its own project from cwd.
+    """
+    resolved_start = start.resolve()
+    if declared_root is not None:
+        resolved_declared = declared_root.resolve()
+        if resolved_start == resolved_declared or resolved_declared in resolved_start.parents:
+            try:
+                if (resolve_agent_dir(resolved_declared) / "tasks").is_dir():
+                    return resolved_declared
+            except (OSError, SystemExit):
+                pass
+    for candidate in (resolved_start, *resolved_start.parents):
         try:
             if (resolve_agent_dir(candidate) / "tasks").is_dir():
                 return candidate
         except (OSError, SystemExit):
             continue
-    return start.resolve()
+    return resolved_start
 
 
 def codex_config_path(home_dir: Path | None = None) -> Path:
@@ -272,14 +285,10 @@ def render_playbook_hooks() -> dict:
     (exec_command) is intentionally not pre-blocked; running shell commands
     without a task is allowed (matches Claude policy).
 
-    PostToolUse: scoped to `^apply_patch$` AND `^exec_command$` so the gate
-    echo fires on both file edits and bash. The same `codex-apply-patch-hook`
-    serves both — `apply_patch_post_context` emits gate-echo text without
-    parsing patch contents, so it works for any tool type. T134 closes the
-    pre-existing gap (MIND_MAP [44]: "Bash shell-out bypasses the apply_patch
-    matcher entirely — pre-edit prevention is apply_patch-only, Stop hook still
-    catches at turn boundary"). With this matcher pair, gate echo now also
-    fires on every bash invocation during an active task.
+    PostToolUse: scoped to `^apply_patch$` only. A successful native file edit
+    publishes gate chronology and injects the next authoritative gate. Shell
+    writes remain outside pre-edit prevention; the Stop hook is their post-hoc
+    enforcement boundary.
     """
     return {
         "hooks": {
@@ -294,7 +303,6 @@ def render_playbook_hooks() -> dict:
             ],
             "PostToolUse": [
                 _playbook_hook_entry("codex-apply-patch-hook", matcher="^apply_patch$"),
-                _playbook_hook_entry("codex-apply-patch-hook", matcher="^exec_command$"),
             ],
         }
     }
@@ -361,6 +369,54 @@ def merge_hooks(existing: dict, additions: dict) -> dict:
     return merged
 
 
+_PLAYBOOK_HOOK_SCRIPTS = {
+    "codex-user-prompt-hook",
+    "codex-stop-hook",
+    "codex-apply-patch-hook",
+}
+
+
+def _prune_obsolete_playbook_hooks(existing: dict, desired: dict) -> dict:
+    """Drop obsolete Playbook registrations while preserving user hooks."""
+    desired_keys: set[tuple[str, str, str]] = set()
+    for event_name, entries in desired.get("hooks", {}).items():
+        for entry in entries:
+            matcher = entry.get("matcher") or ""
+            for command in _entry_commands(entry):
+                desired_keys.add((event_name, matcher, Path(shlex.split(command)[-1]).name))
+
+    pruned = json.loads(json.dumps(existing or {}))
+    hooks = pruned.get("hooks")
+    if not isinstance(hooks, dict):
+        return pruned
+    for event_name, entries in list(hooks.items()):
+        if not isinstance(entries, list):
+            continue
+        kept_entries = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                kept_entries.append(entry)
+                continue
+            matcher = entry.get("matcher") or ""
+            kept_commands = []
+            for hook in entry.get("hooks", []):
+                if not isinstance(hook, dict):
+                    kept_commands.append(hook)
+                    continue
+                try:
+                    script = Path(shlex.split(hook.get("command", ""))[-1]).name
+                except (ValueError, IndexError):
+                    kept_commands.append(hook)
+                    continue
+                key = (event_name, matcher, script)
+                if script not in _PLAYBOOK_HOOK_SCRIPTS or key in desired_keys:
+                    kept_commands.append(hook)
+            if kept_commands:
+                kept_entries.append({**entry, "hooks": kept_commands})
+        hooks[event_name] = kept_entries
+    return pruned
+
+
 def install_project_hooks(project_root: Path) -> Path:
     """Write or merge repo-local .codex/hooks.json for Playbook.
 
@@ -401,33 +457,60 @@ def install_project_hooks(project_root: Path) -> Path:
     if not isinstance(existing.get("hooks"), dict):
         existing = {**existing, "hooks": {}}
 
-    merged = merge_hooks(existing, render_playbook_hooks())
+    desired = render_playbook_hooks()
+    existing = _prune_obsolete_playbook_hooks(existing, desired)
+    merged = merge_hooks(existing, desired)
     hooks_path.write_text(json.dumps(merged, indent=2) + "\n", encoding="utf-8")
     return hooks_path
 
 
+def session_state_dir(project_root: Path, session_id: str) -> Path:
+    """Create/validate and return this Codex session's durable state directory."""
+    record, _ = ensure_session_record(
+        resolve_agent_dir(project_root), "codex", session_id
+    )
+    return record.parent
+
+
 def current_state_file(project_root: Path, session_id: str) -> Path:
-    return resolve_agent_dir(project_root) / "sessions" / session_id / "current_state"
+    return session_state_dir(project_root, session_id) / "current_state"
+
+
+def _pending_gate_edit_file(project_root: Path, session_id: str) -> Path:
+    return session_state_dir(project_root, session_id) / "pending-gate-edit.json"
 
 
 def has_active_task(project_root: Path, session_id: str) -> bool:
-    """True iff current_state names a task and its task.md exists.
+    """True iff current_state and task.md agree on this Codex owner."""
+    task_file, _ = active_task_authority(project_root, session_id)
+    return task_file is not None
 
-    The task.md existence check (panel impl-review #J) prevents a split-brain
-    where current_state points at a task whose directory was deleted —
-    apply_patch_pre_decision would allow but apply_patch_post_context would
-    say "no active task", giving the model contradictory signals.
-    """
+
+def active_task_authority(
+    project_root: Path, session_id: str
+) -> tuple[Path | None, str | None]:
+    """Return the claimed task or an explicit cache/authority disagreement."""
     state_file = current_state_file(project_root, session_id)
     if not state_file.exists():
-        return False
+        return None, None
     try:
         task_num = state_file.read_text(encoding="utf-8").strip()
     except OSError:
-        return False
+        return None, f"cannot read navigation cache {state_file}"
     if not task_num:
-        return False
-    return _find_task_file(project_root, task_num) is not None
+        return None, f"navigation cache {state_file} is empty"
+    from provider.session_state import SessionKey
+    from tasks.core import resolve_agent_dir
+    from tasks.task_document import validate_task_claim, TaskDocumentError
+    try:
+        task_file = validate_task_claim(
+            resolve_agent_dir(project_root),
+            SessionKey.from_values("codex", session_id),
+            task_num,
+        )
+    except TaskDocumentError as exc:
+        return None, str(exc)
+    return task_file, None
 
 
 def _runtime_root() -> Path:
@@ -463,15 +546,27 @@ def apply_patch_pre_decision(
     The caller (scripts/codex-apply-patch-hook) translates a deny into
     `print(reason, file=sys.stderr); sys.exit(2)` per W0(e) decision.
 
-    Policy mirrors Claude's `evaluate_tool_call`:
-      - With active task: always allow.
+    Policy mirrors Claude's structured mutation boundary:
+      - With authoritative active task: allow ordinary paths and validate an
+        owned task.md patch as a first-gate-only native edit.
       - Without active task: deny ONLY for code-file paths under non-management
         directories. README.md, Dockerfile, .env, etc. are allowed (Claude parity).
       - Silent-bypass guard: if patch grammar markers were seen but no paths
         could be parsed, deny with "could not parse" reason (finding 4) — a
         new/malformed patch shape must not slip through unblocked.
     """
-    active_task = has_active_task(project_root, session_id)
+    pending_edit = _pending_gate_edit_file(project_root, session_id)
+    try:
+        pending_edit.unlink(missing_ok=True)
+    except OSError:
+        pass
+    active_task_path, authority_error = active_task_authority(project_root, session_id)
+    active_task = active_task_path is not None
+    if authority_error:
+        return {
+            "decision": "block",
+            "reason": f"Playbook task authority mismatch: {authority_error}",
+        }
 
     # Since this hook is matcher-scoped to ^apply_patch$, getting here means
     # an apply_patch tool call. A missing or non-string command field is a
@@ -497,6 +592,57 @@ def apply_patch_pre_decision(
         }
 
     parsed = parse_patch_paths(command)
+
+    task_paths = []
+    for path in parsed.paths:
+        normalized = "/" + path.replace("\\", "/").lstrip("/")
+        if normalized.endswith("/task.md") and "/.agent/tasks/" in normalized:
+            task_paths.append(path)
+    if task_paths:
+        if not active_task:
+            return {
+                "decision": "block",
+                "reason": "Task-control edits require an authoritative session claim.",
+            }
+        active_real = active_task_path.resolve()
+        foreign = []
+        for path in task_paths:
+            candidate = Path(path)
+            if not candidate.is_absolute():
+                candidate = project_root / candidate
+            if candidate.resolve() != active_real:
+                foreign.append(str(candidate.resolve()))
+        if foreign:
+            return {
+                "decision": "block",
+                "reason": (
+                    f"Task-control edit targets {', '.join(foreign)}, but this "
+                    f"session owns {active_real}."
+                ),
+            }
+        try:
+            from tasks.gate_edit import (
+                GateEditError,
+                candidate_from_apply_patch,
+                validate_task_candidate,
+            )
+            original = active_task_path.read_text(encoding="utf-8")
+            candidate = candidate_from_apply_patch(
+                original, command, active_task_path.as_posix()
+            )
+            validate_task_candidate(original, candidate)
+        except (OSError, GateEditError) as exc:
+            return {"decision": "block", "reason": str(exc)}
+        pending_edit.write_text(
+            json.dumps(
+                {
+                    "task_path": active_task_path.relative_to(project_root).as_posix(),
+                    "original": original,
+                }
+            ),
+            encoding="utf-8",
+        )
+        return None
 
     runtime_paths = [p for p in parsed.paths if _targets_runtime(p, project_root)]
     if runtime_paths:
@@ -584,20 +730,21 @@ def _find_task_file(project_root: Path, task_num: str) -> Path | None:
     return None
 
 
-def _scan_gates(task_file: Path) -> tuple[int, int, str | None]:
-    """Return (done_count, total_count, first_unchecked_text).
+def _scan_gates(task_file: Path) -> tuple[int, int, str | None, int | None]:
+    """Return (done_count, total_count, first_unchecked_text, line_number).
 
     first_unchecked_text is None if all gates are done.
     """
     try:
         lines = task_file.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return 0, 0, None
+        return 0, 0, None, None
 
     total = 0
     done = 0
     first_unchecked: str | None = None
-    for line in lines:
+    first_unchecked_line: int | None = None
+    for line_number, line in enumerate(lines, start=1):
         m = _GATE_LINE_RE.match(line)
         if not m:
             continue
@@ -607,16 +754,20 @@ def _scan_gates(task_file: Path) -> tuple[int, int, str | None]:
             done += 1
         elif first_unchecked is None:
             first_unchecked = m.group(2).strip()
-    return done, total, first_unchecked
+            first_unchecked_line = line_number
+    return done, total, first_unchecked, first_unchecked_line
 
 
-def _format_gate_echo(task_num: str, done: int, total: int, gate_text: str | None) -> str:
-    """Mirror of gate-echo-lib.sh `format_context` (minus the file:line suffix).
-
-    The bash version appends `# Done? Check the box: <rel_path>:<line>`. We omit
-    that for Codex because the agent already has full repo access and the
-    relative-path hint is noise in apply_patch's transcript context.
-    """
+def _format_gate_echo(
+    task_num: str,
+    done: int,
+    total: int,
+    gate_text: str | None,
+    *,
+    task_path: str | None = None,
+    gate_line: int | None = None,
+) -> str:
+    """Unicode-safe bounded mirror of gate-echo-lib.sh ``format_context``."""
     # Distinguish a stub task (zero gate lines) from a fully-completed task.
     # Without this branch, total=0 falls through to "all gates done" which is
     # actively misleading and can trigger session-end actions (impl-review #2).
@@ -630,7 +781,15 @@ def _format_gate_echo(task_num: str, done: int, total: int, gate_text: str | Non
     # (cli.py:1620 cleanup gate). Pattern stays in lockstep with bash sites.
     if _FREEHAND_RE.match(gate_text or ""):
         return f"# [{task_num}] Freehand mode — wait for user instructions. Close only when user says done."
-    return f"# Working on task [{task_num}] gate ({done}/{total}) -> [ ] {gate_text}"
+    prefix = f"# Working on task [{task_num}] gate ({done}/{total}) -> [ ] "
+    route_path = task_path or f".agent/tasks/{task_num}-*/task.md"
+    route_line = str(gate_line) if gate_line is not None else "?"
+    route = f"\n# Full gate: {route_path}:{route_line}"
+    available = max(1, 520 - len(prefix) - len(route))
+    bounded_gate = gate_text
+    if len(bounded_gate) > available:
+        bounded_gate = bounded_gate[: max(0, available - 1)] + "…"
+    return prefix + bounded_gate + route
 
 
 def _no_active_task_echo() -> str:
@@ -642,16 +801,57 @@ def apply_patch_post_context(
     project_root: Path,
     session_id: str,
 ) -> dict:
-    """PostToolUse handler for Codex apply_patch.
+    """Publish a native task edit and build its next-gate context.
 
-    Emits the same first-unchecked-gate echo Claude's `state-echo-hook` produces
-    (W3 minimum-viable scope: gate text + no-task / all-done fallback + freehand
-    suppression). Stateful behaviors (counters, transition logs, typed nudges,
-    write log) are parked — see task 123 W3 / parked items.
+    Emits the same bounded first-unchecked-gate echo Claude's
+    `state-echo-hook` produces and records one chronology event when the patch
+    closed the current gate. The installed matcher limits this handler to
+    `apply_patch`; shell test results are evidence for the unchanged gate, not
+    task-state transitions that need another pointer injection.
 
     Return shape matches Codex's `hookSpecificOutput.additionalContext` contract;
     text is injected as a developer-role message in the next turn (verified in W0(d)).
     """
+    pending_edit = _pending_gate_edit_file(project_root, session_id)
+    if payload.get("tool_name") == "apply_patch" and pending_edit.exists():
+        try:
+            pending = json.loads(pending_edit.read_text(encoding="utf-8"))
+            relative = pending["task_path"]
+            original = pending["original"]
+            task_path = project_root / relative
+            candidate = task_path.read_text(encoding="utf-8")
+            from tasks.gate_edit import gate_closure_from_documents
+            closure = gate_closure_from_documents(original, candidate)
+            if closure is not None:
+                from tasks.chat_state import (
+                    append_chat_event,
+                    chat_timestamp,
+                    derive_event_key,
+                )
+                task_num_for_event = task_path.parent.name.split("-", 1)[0]
+                marker = f"G{task_num_for_event}:{closure.line + 1}"
+                append_chat_event(
+                    resolve_agent_dir(project_root),
+                    marker,
+                    "codex",
+                    session_id,
+                    chat_timestamp(),
+                    f"- [x] {closure.after}",
+                    event_key=derive_event_key(
+                        marker, "codex", session_id, closure.before, closure.after
+                    ),
+                )
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            # Feedback/chronology are post-tool projections. The authoritative
+            # task edit already happened; never misrepresent projection failure
+            # as mutation failure.
+            pass
+        finally:
+            try:
+                pending_edit.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     task_num = _read_active_task_number(project_root, session_id)
 
     if task_num is None:
@@ -661,8 +861,15 @@ def apply_patch_post_context(
         if task_file is None:
             context = _no_active_task_echo()
         else:
-            done, total, first_unchecked = _scan_gates(task_file)
-            context = _format_gate_echo(task_num, done, total, first_unchecked)
+            done, total, first_unchecked, gate_line = _scan_gates(task_file)
+            context = _format_gate_echo(
+                task_num,
+                done,
+                total,
+                first_unchecked,
+                task_path=task_file.relative_to(project_root).as_posix(),
+                gate_line=gate_line,
+            )
 
     return {
         "hookSpecificOutput": {
@@ -680,7 +887,7 @@ def _baseline_key(turn_id: str | None) -> str:
 
 def _turn_baseline_file(project_root: Path, session_id: str, turn_id: str | None) -> Path:
     safe_turn_id = _baseline_key(turn_id)
-    session_dir = resolve_agent_dir(project_root) / "sessions" / session_id
+    session_dir = session_state_dir(project_root, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir / f"codex-dirty-baseline-{safe_turn_id}.json"
 
@@ -697,21 +904,13 @@ def _stop_block_marker_file(project_root: Path, session_id: str, turn_id: str | 
     baseline so a genuinely new edit still gets nudged once.
     """
     safe_turn_id = _baseline_key(turn_id)
-    session_dir = resolve_agent_dir(project_root) / "sessions" / session_id
+    session_dir = session_state_dir(project_root, session_id)
     session_dir.mkdir(parents=True, exist_ok=True)
     return session_dir / f"codex-stop-blocked-{safe_turn_id}.flag"
 
 
-def _chat_log_path(project_root: Path) -> Path:
-    return resolve_agent_dir(project_root) / "chat_log.md"
-
-
-def _chat_counter_path(project_root: Path) -> Path:
-    return resolve_agent_dir(project_root) / "chat_log_counter"
-
-
 def _session_counter_path(project_root: Path, session_id: str) -> Path:
-    return resolve_agent_dir(project_root) / "sessions" / session_id / "counters"
+    return session_state_dir(project_root, session_id) / "counters"
 
 
 def _agent_dir_writable(project_root: Path) -> bool:
@@ -731,50 +930,6 @@ def _normalize_prompt(prompt: str) -> str:
         removed = len(text) - max_len
         text = f"{text[:max_len]}...[{removed} chars removed]"
     return text
-
-
-def _migrate_chat_log_if_needed(log_path: Path, counter_path: Path) -> None:
-    if not log_path.exists():
-        return
-    original = log_path.read_text(encoding="utf-8")
-    if not original.strip():
-        return
-    if any(_NEW_CHAT_HEADER_RE.match(line) for line in original.splitlines()):
-        return
-    if not any(_OLD_CHAT_HEADER_RE.match(line) for line in original.splitlines()):
-        return
-
-    msg_num = 0
-    new_lines: list[str] = []
-    for line in original.splitlines():
-        match = _OLD_CHAT_HEADER_RE.match(line)
-        if match:
-            msg_num += 1
-            suffix = match.group(2)
-            new_lines.append(f"**[M{msg_num:03d}]** [{match.group(1)}]{suffix}")
-        else:
-            new_lines.append(line)
-    new_text = "\n".join(new_lines)
-    if original.endswith("\n"):
-        new_text += "\n"
-    log_path.write_text(new_text, encoding="utf-8")
-    counter_path.write_text(f"{msg_num}\n", encoding="utf-8")
-
-
-def _current_chat_counter(log_path: Path, counter_path: Path) -> int:
-    if counter_path.exists():
-        try:
-            return int(counter_path.read_text(encoding="utf-8").strip() or "0")
-        except ValueError:
-            pass
-
-    highest = 0
-    if log_path.exists():
-        for line in log_path.read_text(encoding="utf-8").splitlines():
-            match = _NEW_CHAT_HEADER_RE.match(line)
-            if match:
-                highest = max(highest, int(match.group(1)))
-    return highest
 
 
 def reset_session_counters(project_root: Path, session_id: str) -> Path:
@@ -811,23 +966,11 @@ def append_prompt_to_chat_log(
     if not user_message:
         return False
 
-    log_path = _chat_log_path(project_root)
-    counter_path = _chat_counter_path(project_root)
-
-    if not log_path.exists():
-        log_path.write_text(_CHAT_LOG_HEADER, encoding="utf-8")
-
-    _migrate_chat_log_if_needed(log_path, counter_path)
-
     ts = (timestamp or dt.datetime.now(dt.timezone.utc)).strftime("%Y-%m-%d %H:%M:%S UTC")
-    current = _current_chat_counter(log_path, counter_path)
-    next_id = current + 1
-    counter_path.write_text(f"{next_id}\n", encoding="utf-8")
-
-    with log_path.open("a", encoding="utf-8") as f:
-        f.write("---\n\n")
-        f.write(f"**[M{next_id:03d}]** [{ts}] `HOST` (codex/{session_id})\n\n")
-        f.write(f"{user_message}\n\n")
+    from tasks.chat_state import append_chat_message
+    append_chat_message(
+        resolve_agent_dir(project_root), "codex", session_id, ts, user_message
+    )
 
     reset_session_counters(project_root, session_id)
     return True
@@ -929,6 +1072,37 @@ def save_turn_baseline(project_root: Path, session_id: str, turn_id: str | None)
     return baseline_file
 
 
+def checkpoint_turn_baselines(project_root: Path, session_id: str) -> int:
+    """Commit authorized code state into this Codex session's Stop baselines.
+
+    A task may be activated, worked, and closed within one Codex turn.  Once
+    closure removes the active-task pointer, Stop must compare against the
+    authorized state at that lifecycle boundary rather than the older
+    prompt-start state.  Update every extant turn key because the tasks CLI
+    knows the native session identity but does not receive Codex's turn ID.
+
+    Later no-task edits remain detectable because they occur after this
+    checkpoint.  Baselines belonging to other sessions are never touched.
+    """
+    session_dir = session_state_dir(project_root, session_id)
+    if not session_dir.exists():
+        return 0
+
+    snapshot = json.dumps(code_state(project_root), indent=2, sort_keys=True) + "\n"
+    baseline_files = list(session_dir.glob("codex-dirty-baseline-*.json"))
+    for baseline_file in baseline_files:
+        baseline_file.write_text(snapshot, encoding="utf-8")
+
+    # Re-arm Stop relative to the checkpoint.  A marker left by an earlier
+    # active-task stop must not suppress a genuinely new post-closure edit.
+    for marker in session_dir.glob("codex-stop-blocked-*.flag"):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
+    return len(baseline_files)
+
+
 def load_turn_baseline(project_root: Path, session_id: str, turn_id: str | None) -> dict[str, str] | None:
     baseline_file = _turn_baseline_file(project_root, session_id, turn_id)
     if not baseline_file.exists():
@@ -953,12 +1127,17 @@ def _active_task_stop_decision(project_root: Path, session_id: str) -> dict:
     """Reuse the existing authoritative stop guard for active-task sessions."""
     stop_hook = playbook_scripts_dir() / "stop-hook"
     env = os.environ.copy()
+    for name in ("CLAUDE_CODE_SESSION_ID", "ANTIGRAVITY_CONVERSATION_ID",
+                 "PLAYBOOK_BRIDGE_PROVIDER"):
+        env.pop(name, None)
     env["PLAYBOOK_SESSION_ID"] = session_id
+    env["PLAYBOOK_PROVIDER"] = "codex"
+    env["CODEX_THREAD_ID"] = session_id
     try:
         result = subprocess.run(
             ["bash", str(stop_hook)],
             cwd=project_root,
-            input=json.dumps({}),
+            input=json.dumps({"session_id": session_id}),
             text=True,
             capture_output=True,
             check=False,
@@ -1013,7 +1192,13 @@ def _compute_stop_decision(
 ) -> dict:
     """Raw Codex stop evaluation (no self-release; wrapped by
     stop_decision_for_no_task_code_changes)."""
-    if has_active_task(project_root, session_id):
+    active_task, authority_error = active_task_authority(project_root, session_id)
+    if authority_error:
+        return {
+            "decision": "block",
+            "reason": f"Playbook task authority mismatch: {authority_error}",
+        }
+    if active_task is not None:
         return _active_task_stop_decision(project_root, session_id)
 
     baseline = load_turn_baseline(project_root, session_id, turn_id)

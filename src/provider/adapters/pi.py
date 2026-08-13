@@ -43,6 +43,7 @@ from typing import Optional
 
 from ..adapter import ProviderAdapter, Invocation
 from ..capabilities import ProviderCapabilities
+from ..session_identity import SessionConformance, declared_session_conformance
 
 
 class PiAdapter(ProviderAdapter):
@@ -107,8 +108,11 @@ class PiAdapter(ProviderAdapter):
         if shutil.which("omlx") is None and shutil.which("pi") is None:
             return f"(error: neither omlx nor pi found on PATH)"
         inv = self.headless_argv(prompt, model, context=system_context)
-        env = os.environ.copy()
+        from provider.session_identity import scrub_inherited_session_identity
+        env = scrub_inherited_session_identity(os.environ)
+        env["PLAYBOOK_PROVIDER"] = "pi"
         env["PLAYBOOK_SESSION_ID"] = self._session_id or "judge"
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         from provider import sandbox as _sandbox
         result = _sandbox.run(
             "pi", inv.argv,
@@ -229,6 +233,31 @@ class PiAdapter(ProviderAdapter):
                         return cand
         return None
 
+    @classmethod
+    def _interactive_support_error(cls) -> Optional[str]:
+        """Return why the wrapper-backed interactive path is unavailable."""
+
+        import shutil
+
+        wrapper = cls._wrapper_path()
+        if wrapper is None or not wrapper.is_file():
+            return "Playbook pi wrapper/identity bridge is not installed"
+        candidate_hook_dirs = (wrapper.parent, wrapper.parent.parent / "scripts")
+        required = (
+            "gate-echo-lib.sh",
+            "task-gate-hook",
+            "playbook-pi-hook-adapter.ts",
+            "playbook-pi-omlx-models.json",
+        )
+        if not any(
+            all((hook_dir / name).is_file() for name in required)
+            for hook_dir in candidate_hook_dirs
+        ):
+            return "Playbook pi wrapper is missing required identity bridge assets"
+        if shutil.which("pi") is None:
+            return "pi executable is not installed"
+        return None
+
     def launch_interactive(self, project_root: Path, **kwargs) -> int:
         """Interactive pi session via the gate-hooked `pb-pi` wrapper.
 
@@ -236,13 +265,31 @@ class PiAdapter(ProviderAdapter):
         SAME hook adapter (`-e`), model allow-list, and config isolation as the
         CLI path — `detect_capabilities()` advertises hooks, so launching hookless
         pi here would be a footgun (impl-review T145 #2). Falls back to direct
-        `pi` only if the wrapper can't be found.
+        `pi` is never an acceptable fallback because it omits the required
+        identity/policy extension.
         """
-        env = os.environ.copy()
+        from provider.session_identity import scrub_inherited_session_identity
+        env = scrub_inherited_session_identity(os.environ)
         wrapper = self._wrapper_path()
-        cmd = [str(wrapper)] if wrapper else ["pi"]
-        result = subprocess.run(cmd, cwd=str(project_root), env=env, **kwargs)
+        unsupported_reason = self._interactive_support_error()
+        if unsupported_reason:
+            raise RuntimeError(f"interactive pi unsupported: {unsupported_reason}")
+        assert wrapper is not None
+        env["PLAYBOOK_PROVIDER"] = "pi"
+        result = subprocess.run(
+            [str(wrapper)], cwd=str(project_root), env=env, **kwargs
+        )
         return result.returncode
+
+    def interactive_argv(self, *, prompt: str, model: Optional[str] = None,
+                         resume_session_id: Optional[str] = None) -> list[str]:
+        # pb-pi consumes an optional positional model; `--` then forwards the
+        # provider arguments without misreading the prompt as a model.
+        argv = [model] if model else []
+        argv.append("--")
+        if resume_session_id:
+            argv += ["--session", resume_session_id]
+        return [*argv, prompt]
 
     def launch_headless(self, project_root: Path, prompt: str, **kwargs) -> str:
         """Headless one-shot via sandbox."""
@@ -257,23 +304,35 @@ class PiAdapter(ProviderAdapter):
     # ── Capabilities ────────────────────────────────────────────────────────
 
     def detect_capabilities(self) -> ProviderCapabilities:
+        supported = self.session_conformance().supported
         return ProviderCapabilities(
             provider="pi",
             # pi's extension system (`pi -e`) bridges to the bash hooks — see the
             # Hooks section + T145. tool_call→PreToolUse (real `{block}` deny),
             # tool_result→PostToolUse (gate echo), input→UserPromptSubmit.
-            has_user_prompt_hook=True,
-            has_pre_tool_hook=True,
-            has_post_tool_hook=True,
+            has_user_prompt_hook=supported,
+            has_pre_tool_hook=supported,
+            has_post_tool_hook=supported,
             # No blocking Stop equivalent: pi can't refuse to end a turn, only
             # soft-renudge via sendUserMessage. Anti-walk-away enforcement is
             # deferred (Phase 2). Keep False so callers don't assume hard Stop.
             has_stop_hook=False,
-            # The wrapper sets PLAYBOOK_SESSION_ID and the adapter injects it into
-            # every hook payload (`sessionId()`), so session id IS in the payload.
-            session_id_in_payload=True,
+            # The extension reads ctx.sessionManager.getSessionId() and injects
+            # that native ID into every hook payload and command environment.
+            session_id_in_payload=supported,
             session_log_format="none",
             session_log_base=None,
+        )
+
+    def session_conformance(self) -> SessionConformance:
+        unsupported_reason = self._interactive_support_error()
+        supported = unsupported_reason is None
+        return declared_session_conformance(
+            "pi",
+            exact_resume=True,
+            resume_cwd="current project with pb-pi --session <native-id>",
+            supported=supported,
+            unsupported_reason=unsupported_reason,
         )
 
     # ── Session log / chat log ──────────────────────────────────────────────

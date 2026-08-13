@@ -108,8 +108,26 @@ def collect_chat(agent_dir: Path, task_num: str, chat_file: Path | None = None) 
         spans.append("\n".join(current))
 
     if spans:
-        return Slice("chat", _trim("\n\n".join(spans)), True,
-                     f"{len(spans)} tagged span(s) in chat_log.md")
+        from tasks.chat_state import parse_chat_entries
+        normalized = []
+        for span in spans:
+            entries = parse_chat_entries(span)
+            if not entries:
+                # Preserve very old/informal tagged evidence whose M rows lack
+                # the timestamp/speaker grammar understood by the parser.
+                normalized.append(span)
+                continue
+            for entry in entries:
+                if not entry.marker.startswith("M"):
+                    continue
+                identity = (
+                    f" {entry.provider}/{entry.session_id}"
+                    if entry.provider and entry.session_id else ""
+                )
+                normalized.append(f"[{entry.marker}]{identity} {entry.body}")
+        if normalized:
+            return Slice("chat", _trim("\n\n".join(normalized)), True,
+                         f"{len(spans)} tagged span(s) in chat_log.md")
 
     # Fallback: timestamp-window attribution (untagged tasks). Build windows from
     # gate entries + bash_history `tasks work <N>`, then pull this task's messages.

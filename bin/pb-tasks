@@ -1,4 +1,5 @@
 #!/bin/bash
 # tasks CLI — standalone, no Docker dependency
 export PYTHONDONTWRITEBYTECODE=1
+PLAYBOOK_TASKS_EXECUTABLE="$(cd -P "$(dirname "$0")" && pwd)/$(basename "$0")" \
 PYTHONPATH="$(dirname "$0")/../src" exec python3 -m tasks.cli "$@"

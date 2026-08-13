@@ -206,9 +206,11 @@ def plan_review_prompt(task_path: str, inline_context: bool = False) -> str:
         "Be specific and adversarial — your job is to find problems, not approve. "
         "Max 5 findings, Critical and Important only — drop Minor. "
         "Each finding: cite file:line, 1-2 sentences stating the problem, 1 sentence stating the fix. No elaboration. "
-        f"Then edit {task_path}: "
-        "(1) in the '## Plan Review' section, replace the '(plan review findings appear here)' placeholder with your findings — this is idempotent on reruns (if the placeholder was already replaced, replace the existing findings), "
-        "(2) revise the ## Work Plan gates to address Critical and Important findings."
+        "Return only the bounded review findings in your final response. "
+        f"Do not edit or claim {task_path}, run pb-tasks work, or mutate any project file. "
+        "The harness saves your response as a separate review artifact; the owning "
+        "session verifies the evidence, triages each finding, publishes accepted "
+        "findings into ## Plan Review, and revises ## Work Plan gates."
     )
 
 
@@ -231,8 +233,11 @@ def impl_review_prompt(task_path: str, inline_context: bool = False) -> str:
         "Be specific and adversarial — your job is to find problems, not approve. "
         "Max 5 findings, Critical and Important only — drop Minor. "
         "Each finding: cite file:line, 1-2 sentences stating the problem, 1 sentence stating the fix. No elaboration. "
-        f"Then edit {task_path}: "
-        "(1) in the '## Implementation Review' section, replace the '(implementation review findings appear here)' placeholder with your findings — this is idempotent on reruns (if the placeholder was already replaced, replace the existing findings)."
+        "Return only the bounded review findings in your final response. "
+        f"Do not edit or claim {task_path}, run pb-tasks work, or mutate any project file. "
+        "The harness saves your response as a separate review artifact; the owning "
+        "session verifies the evidence, triages each finding, and publishes accepted "
+        "findings into ## Implementation Review through the task authority path."
     )
 
 
@@ -398,6 +403,17 @@ def standing_orders() -> str:
 - **Never defer awareness**: The moment you realize work exists, capture it. Forgetting is the failure mode, not having too many gates."""
 
 
+def runtime_identity_guidance() -> str:
+    """Recipient-side fail-safe when an older ambient CLI serves newer guidance."""
+    return """\
+Bootstrap must print a `Playbook runtime:` line (version, commit, executable,
+and root) plus `Project generation:`. If either line is absent, or generation
+reports `SKEW`, stop before task ownership changes. Run `command -v pb-tasks`
+and `pb-tasks runtime-info`; then upgrade the ambient launcher or rerun init
+from the intended runtime. Historical task `## Sessions` rows are ownership
+history, never evidence of this process's native identity."""
+
+
 # ---------------------------------------------------------------------------
 # CLAUDE.md init template
 # ---------------------------------------------------------------------------
@@ -415,6 +431,8 @@ pb-tasks bootstrap          # loads mind map, skills, pending tasks
 
 Then **ask the user** what they want to work on. Don't autonomously pick a task.
 
+{runtime_identity_guidance()}
+
 ## When a Task Is Required
 
 Start or activate a task **only for repository code work**. A task is not
@@ -426,16 +444,25 @@ Before creating a task, inspect the most recent 2–3 tasks and cluster matching
 work into the related task: reopen it with `pb-tasks work <N>` and append unchecked gates.
 Create a new task only when none of those recent tasks honestly matches.
 
+## Enforcement Scope
+
+The workflow rule is broader than hook coverage: activate a task before every
+repository code edit. Hooks recognize configured code paths and validate
+task.md gate order through structured editor calls. Shell-command detection is
+heuristic and bypassable; only sandbox containment can physically deny an
+arbitrary shell write. An active task authorizes repository code edits but does
+not prove that an edit semantically belongs to the current gate.
+
 ## CLI
 
 ```bash
 pb-tasks work <number>              # activate task, hook starts tracking
-pb-tasks work done [--force]        # finish; bounces if gates still open (--force overrides)
+pb-tasks work done [--force]        # finish after gates + intent reconcile; open gates bounce
 pb-tasks new <type> <name> [intent] # create task — intent fills ## Intent
 pb-tasks new --stub <type> <name> [intent] # stub — expands on pb-tasks work
 pb-tasks plan-review <number>       # blind plan review by independent agent
 pb-tasks impl-review <number>       # blind implementation review by independent agent
-pb-tasks list [--pending]           # task overview
+pb-tasks list [--pending|--recent]  # all, open, or latest 3 tasks
 pb-tasks status                     # current gate position
 pb-tasks bootstrap                  # orientation: mind map + skills + pending
 pb-sandbox --prompt "..." [--agent claude|codex|agy|pi] [--bare]  # run a contained headless subagent; `--help` for flags
@@ -446,8 +473,10 @@ pb-sandbox --prompt "..." [--agent claude|codex|agy|pi] [--bare]  # run a contai
 - Create task directories manually — always `pb-tasks new`
 - Edit `.agent/sessions/` state files directly — use `pb-tasks work <N>` / `pb-tasks work done`
 - Edit `## Status` in task.md directly — use `pb-tasks work done`
+- Close a gate other than the exact current task.md gate supplied by the hook, or close multiple gates in one edit
+- Use shell redirection to bypass task ownership or gate-order validation; structured hooks mediate editor writes, while only sandbox containment can physically deny arbitrary shell writes
 - Skip task.md checkboxes — they're your observable progress
-- Start coding without an active task — blocked by hook until `pb-tasks work <N>`
+- Start coding without an active task — run `pb-tasks work <N>` first; hook coverage has the limits above
 - Use EnterPlanMode or plan files — use `pb-tasks new <type> <name>` instead, the task.md IS the plan
 """
 
@@ -457,8 +486,12 @@ pb-sandbox --prompt "..." [--agent claude|codex|agy|pi] [--bare]  # run a contai
 # ---------------------------------------------------------------------------
 
 def identity_preamble() -> str:
-    """One-line framing shown at the top of bootstrap."""
-    return "You are a coding assistant working with a task management harness."
+    """Framing shown at the top of bootstrap."""
+    return (
+        "You are a coding assistant working with a task management harness.\n"
+        "Bootstrap is orientation, not authorization: inspect this context, then "
+        "stop and ask the user what to work on. Do not select or activate a task."
+    )
 
 
 def mind_map_header() -> str:
@@ -479,28 +512,12 @@ def workflow_briefing() -> str:
 
 
 def cli_reference() -> str:
-    """CLI quick reference shown at bootstrap."""
-    return """\
-Tasks CLI:
-  Workflow:
-    pb-tasks work <N>             activate task
-    pb-tasks work done            deactivate
-    pb-tasks freehand             user-driven mode (no gate pressure)
-  Create:
-    pb-tasks new <type> <name> [intent]   create task (intent fills ## Intent)
-    pb-tasks new --stub <type> <name> [intent]   stub (expands on work)
-  Review:
-    pb-tasks plan-review <N>      blind plan review
-    pb-tasks impl-review <N>      blind impl review
-    pb-tasks panel-review [<N>]   multi-model judge panel; task optional — use --prompt alone for any question, --bare to strip all context
-  Analysis:
-    pb-tasks retro [--since N]    project retrospective
-    pb-tasks global-retro-collect --since DATE ROOT [ROOT...]   collect cross-VM retro archive
-    pb-tasks context <N>          extract chat messages for a task
-    pb-tasks doctor               harness health check
-  Info:
-    pb-tasks list [--pending]     show tasks
-    pb-tasks status               current gate position"""
+    """Full public CLI reference shown at bootstrap and in provider guidance.
+
+    ``pb-tasks --help`` is the authority. Reusing it here prevents bootstrap
+    and generated onboarding files from maintaining a second command list.
+    """
+    return usage_text()
 
 
 def agents_md_template() -> str:
@@ -525,8 +542,10 @@ Run this first, before anything else:
     pb-tasks bootstrap
 
 It prints the project mind map, pending tasks, and the full CLI reference.
-Read it.  Then ask the user what to work on, or pick the highest-priority
-pending task.
+Read it.  Then stop and ask the user what to work on. Bootstrap is orientation,
+not authorization to select or activate a pending task.
+
+{runtime_identity}
 
 ## Before Editing Code
 
@@ -534,7 +553,8 @@ You **must** activate a task before touching any code file:
 
     pb-tasks work <N>      # e.g. pb-tasks work 042
 
-This sets the active task.  Without it, edits are blocked.
+This sets the active task. Without it, recognized `apply_patch` code edits are
+blocked; the enforcement limits below still apply.
 
 ## When a Task Is Required
 
@@ -547,11 +567,22 @@ Before creating a task, inspect the most recent 2–3 tasks and cluster matching
 work into the related task: reopen it with `pb-tasks work <N>` and append unchecked gates.
 Create a new task only when none of those recent tasks honestly matches.
 
+## Codex Enforcement Scope
+
+The workflow rule is broader than hook coverage: activate a task before every
+repository code edit. Pre-edit checks cover `apply_patch` on configured code
+paths; shell writes bypass that precheck and can only be detected post-hoc by
+Stop when that hook runs, or physically denied by sandboxing. An active task
+allows repository-wide patches but does not prove that an edit semantically
+belongs to the current gate. Owned task.md patches separately enforce
+one-gate-at-a-time progression.
+
 ## Working Through a Task
 
 - Read the task.md that `pb-tasks work` prints.
-- Work **one gate at a time**: read the gate → do the work → check the box
-  (append your outcome on the same line) → move to the next gate.
+- Work **one gate at a time**: follow the gate and exact task.md route supplied
+  by the hook → do the work → use your normal file-edit tool to check that one
+  box and append your outcome on the same line. The hook then supplies the next gate.
 - Never skip gates.  Never batch-close multiple gates in one edit.
 - If you discover new work, add new gates to task.md immediately.
 
@@ -559,8 +590,9 @@ Create a new task only when none of those recent tasks honestly matches.
 
     pb-tasks work done
 
-This deactivates the task and marks it done.  Run it when all gates are
-checked — not before.
+This deactivates the task and marks it done. Run it explicitly when all gates
+are checked and the task intent is honestly reconciled — not before. Do not
+rely on a later task switch to close completed work.
 
 ## CLI Reference
 
@@ -570,17 +602,21 @@ checked — not before.
 
 - Edit `.agent/sessions/` files directly — use `pb-tasks work` / `pb-tasks work done`.
 - Create `.agent/tasks/NNN-name/` directories manually — use `pb-tasks new`.
+- Close a gate other than the exact current task.md gate supplied by the hook, or close multiple gates in one edit.
+- Use shell redirection to bypass task ownership or gate-order validation; use your provider's structured file-edit tool. Only sandbox containment can physically deny arbitrary shell writes.
 - Close multiple gates in a single edit.
 - Start coding without an active task.
-""".format(cli_ref=cli_reference())
+""".format(
+        cli_ref=cli_reference(), runtime_identity=runtime_identity_guidance()
+    )
 
 
 def antigravity_md_template() -> str:
     """GEMINI.md content for Antigravity CLI (`agy`) projects.
 
     agy reads GEMINI.md from project cwd (mirrors the user-level `~/.gemini/GEMINI.md`
-    convention). Agy 1.1.10 exposes only user-global plugin registration, so
-    standalone project init installs guidance without claiming hook enforcement.
+    convention) and can also load AGENTS.md. Standalone project init installs
+    guidance without claiming or installing Agy hook enforcement.
 
     Model selection: current agy accepts `--model`; panel-review pins each Gemini
     judge explicitly. Interactive sessions may still use the model selected in
@@ -589,9 +625,15 @@ def antigravity_md_template() -> str:
     return """\
 # Playbook Workflow
 
-This project uses the **Playbook task harness**. Agy 1.1.10 has no verified
-project-local hook loader, so this file is advisory. `pb-tasks init` never
-installs a user-global Agy plugin.
+This project uses the **Playbook task harness**. Agy may load both `AGENTS.md`
+and `GEMINI.md`. Shared workflow in `AGENTS.md` still applies, but this file is
+the provider-specific authority for Agy capabilities: Codex or other-provider
+hook/enforcement claims in `AGENTS.md` do not describe Agy.
+
+Standalone `pb-tasks init` installs this guidance without installing or claiming
+Agy hooks. Treat enforcement as advisory unless the active Agy integration
+reports an installed capability separately. A previously installed user-global
+plugin can still be active; inspect `agy plugin list` for its provenance.
 
 ## Start of Session
 
@@ -600,6 +642,10 @@ Run this first:
     pb-tasks bootstrap
 
 It prints the project mind map, pending tasks, and the full CLI reference.
+Read it. Then stop and ask the user what to work on. Do not select or activate
+a pending task without that direction.
+
+{runtime_identity}
 
 ## Before Editing Code
 
@@ -610,11 +656,16 @@ Activate a task:
 ## Working Through a Task
 
 Work one gate at a time.  Check each gate box before moving to the next.
-Never skip.  Never batch.
+Use your normal structured file-edit tool on the exact task.md gate supplied by
+the hook. The hook rejects foreign, skipped, or multi-gate closure and then
+supplies the next gate; no gate-edit CLI command is part of the workflow.
 
 ## End of Task
 
     pb-tasks work done
+
+Run it explicitly only after all gates are checked and the task intent is
+honestly reconciled. Do not rely on a later task switch to close completed work.
 
 ## CLI Reference
 
@@ -624,9 +675,12 @@ Never skip.  Never batch.
 
 - Edit `.agent/sessions/` files directly — use `pb-tasks work` / `pb-tasks work done`.
 - Create `.agent/tasks/NNN-name/` directories manually — use `pb-tasks new`.
+- Use shell redirection to bypass task ownership or gate-order validation.
 - Close multiple gates in a single edit.
 - Start coding without an active task.
-""".format(cli_ref=cli_reference())
+""".format(
+        cli_ref=cli_reference(), runtime_identity=runtime_identity_guidance()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -637,16 +691,22 @@ def usage_text() -> str:
     """Usage text for `tasks --help`."""
     types = ", ".join(sorted(set(PLAYBOOKS.keys()) | {"quick"}))
     return f"""\
-Usage: tasks <command> [args]
+Usage: pb-tasks <command> [args]
 
-Commands:
+First decisions:
   work <number>       Set active task (e.g. pb-tasks work 058)
+                      Claimed task: use exactly one explicit owner proof:
+                        --handoff-from provider:native-id  cooperative transfer
+                        --recover-from provider:native-id  abandoned-owner recovery
   work done [--force] Finish task; bounces if gates still open (--force overrides)
   freehand            User-driven mode (no gate pressure)
   new <type> <name> [intent]   Create task (intent pre-fills ## Intent)
   new --stub <type> <name> [intent]   Create stub (expands on work)
-  list [--pending]    List all tasks with status
+  list [--pending|--recent] List all, open, or latest 3 tasks with status
   status              Show head position for active tasks
+  bootstrap           Orientation: mind map, skills, tasks, recent messages, this reference
+
+Review and analysis:
   plan-review <N>     Run blind plan review
   impl-review <N>     Run blind implementation review
   panel-review [<N>]  Multi-model judge panel
@@ -654,21 +714,32 @@ Commands:
                       --no-mind-map      strip mind map from context
                       --bare             no context at all; --prompt is the entire prompt
   retro [--since N]   Project retrospective
+  intent <N> [--collect-only] [--base REF --head REF]
+                      Collect and compare task intent across evidence layers
   global-retro-collect --since DATE [--machine NAME] [--out DIR] [--format zip|tgz] ROOT [ROOT...]
                       Collect Playbook artifacts for a global retro archive
   context <N>         Extract chat messages for a task
   log [N] [--width W]  Compact one-line-per-message chat log (last N, body cropped to W; default all/500)
+  narrative [--status|--pending|--render] [--lines N] [--limit N]
+                      Read the chat log as arcs over spans over comments, for the
+                      user to see at a glance what happened over hours.
+                      --status (default) what is narrated, what is new
+                      --pending           un-narrated comments, one line each
+                      --render            write .agent/narrative/narrative.html
+                      Annotations are authored by the /narrative skill, never inferred.
+
+Maintenance:
   prepare-merge [--target <branch>] [--dry-run]
                       Renumber tasks, re-sequence chat_log, report MIND_MAP collisions
                       so the branch merges cleanly into target (default: main)
   doctor              Harness health check
-  bootstrap           Load mind map + skills + pending tasks
   init [PROJECT] [--provider NAME] [--no-hooks]
                       Reconcile local Harness files for installed agents
 
 Sandboxed subagents (separate CLI):
   pb-sandbox --prompt "..." [--agent claude|codex|agy|pi] [--bare] [--stream]
-                      Run a contained headless agent (write-containment); `--help` for flags
+                      Run a contained headless agent (write-containment)
+  pb-sandbox --help   Discover models, providers, policy, and all sandbox flags
 
 Task types: {types}
 
@@ -682,7 +753,8 @@ Examples:
   pb-tasks panel-review --prompt "which of these two designs is simpler?" --no-mind-map
   pb-tasks panel-review --bare --prompt "read ideas.txt and pick the best story idea"
   pb-tasks global-retro-collect --since 2026-03-14 ~/Code /data --out /tmp
-  pb-tasks list --pending"""
+  pb-tasks list --pending
+  pb-tasks list --recent"""
 
 
 # ---------------------------------------------------------------------------

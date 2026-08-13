@@ -4,7 +4,7 @@
       {"script": "session-start-hook"}
     ],
     "PreToolUse": [
-      {"script": "task-gate-hook", "matcher": "Edit|Write|Bash"}
+      {"script": "task-gate-hook", "matcher": "Edit|Write|MultiEdit|Bash"}
     ],
     "UserPromptSubmit": [
       {"script": "chat-log-hook", "statusMessage": "Logging to chat_log.md"}

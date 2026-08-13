@@ -31,6 +31,7 @@ MANAGED_SCHEMA = 2
 class OperationState(str, Enum):
     CREATE = "create"
     UPDATE = "update"
+    DELETE = "delete"
     UNCHANGED = "unchanged"
 
 
@@ -57,6 +58,26 @@ class CreateOnlyFileIntent:
     relative: str
     content: str
     mode: int = 0o644
+
+
+@dataclass(frozen=True)
+class ExactFileIntent:
+    """One authenticated, unmarked file transition used by migrations."""
+
+    relative: str
+    content: str
+    expected_digest: str
+    mode: int = 0o644
+    hook: bool = False
+
+
+@dataclass(frozen=True)
+class ExactDeleteIntent:
+    """Delete one authenticated regular file during a migration."""
+
+    relative: str
+    expected_digest: str
+    expected_mode: int = 0o644
     hook: bool = False
 
 
@@ -92,6 +113,7 @@ class KeyedListEntry:
     adopt_hashes: tuple[str, ...] = ()
     nested_list_field: str | None = None
     nested_key_fields: tuple[str, ...] = ()
+    adopt_keys: tuple[tuple[Any, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -106,6 +128,8 @@ Intent: TypeAlias = (
     DirectoryIntent
     | ManagedFileIntent
     | CreateOnlyFileIntent
+    | ExactFileIntent
+    | ExactDeleteIntent
     | SharedBlockIntent
     | SharedJsonIntent
     | SharedKeyedListIntent
@@ -309,19 +333,23 @@ def shared_scaffold_contribution(
     project_root: Path,
     *,
     title: str | None = None,
-    playbooks_readme: str | None = None,
 ) -> Contribution:
     """Return Task-B-owned, provider-neutral project scaffold intents."""
     root = project_root.resolve(strict=True)
     agent_dir = _validated_agent_dir(root)
     agent_relative = agent_dir.relative_to(root).as_posix()
-    if playbooks_readme is None:
-        asset = _runtime_asset("scripts/playbooks-README.md")
-        if asset is None:
-            raise ReconcileError("runtime asset missing: scripts/playbooks-README.md")
-        playbooks_readme = asset.read_text(encoding="utf-8")
     display = title or root.name.replace("-", " ").replace("_", " ").title()
-    readme_relative = f"{agent_relative}/playbooks/README.md"
+    from .core import VERSION
+    from .runtime import RUNTIME_COMPAT_SCHEMA, runtime_commit
+    runtime_marker = json.dumps(
+        {
+            "runtime_schema": RUNTIME_COMPAT_SCHEMA,
+            "version": VERSION,
+            "commit": runtime_commit(),
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
     ignore_body = """.agent/current_user
 .agent/bash_history
 .agent/*/bash_history
@@ -329,19 +357,21 @@ def shared_scaffold_contribution(
 .agent/chat_log_counter.lock
 .agent/sessions/
 .agent/*/sessions/
+.agent/narrative/narrative.html
+.agent/narrative/entries.json
+.agent/*/narrative/narrative.html
+.agent/*/narrative/entries.json
 """
     return Contribution(
         "shared",
         (
             DirectoryIntent(f"{agent_relative}/tasks"),
-            DirectoryIntent(f"{agent_relative}/playbooks"),
             DirectoryIntent(".agent/templates"),
             ManagedFileIntent(
-                readme_relative,
-                playbooks_readme,
-                "scripts/playbooks-README.md",
-                marker_style="markdown",
-                adopt_hashes=(_digest(playbooks_readme),),
+                ".agent/playbook-runtime.json",
+                runtime_marker,
+                "tasks/reconcile:project-runtime",
+                marker_style="json",
             ),
             CreateOnlyFileIntent(
                 "MIND_MAP.md",
@@ -534,6 +564,50 @@ def _plan_intent(
         if target.exists():
             return _file_operation(intent, owners, OperationState.UNCHANGED, None), None
         return _file_operation(intent, owners, OperationState.CREATE, intent.content), None
+
+    if isinstance(intent, ExactFileIntent):
+        if not target.exists():
+            return None, PlanConflict(
+                intent.relative, "authenticated migration source is missing", owners
+            )
+        existing = target.read_text(encoding="utf-8")
+        digest = _digest(existing)
+        if digest != intent.expected_digest:
+            return None, PlanConflict(
+                intent.relative, "authenticated migration source changed", owners
+            )
+        return _file_operation(
+            intent,
+            owners,
+            OperationState.UPDATE,
+            intent.content,
+            expected_digest=digest,
+            mode=intent.mode,
+        ), None
+
+    if isinstance(intent, ExactDeleteIntent):
+        if not target.exists():
+            return None, PlanConflict(
+                intent.relative, "authenticated deletion source is missing", owners
+            )
+        existing = target.read_text(encoding="utf-8")
+        digest = _digest(existing)
+        if digest != intent.expected_digest:
+            return None, PlanConflict(
+                intent.relative, "authenticated deletion source changed", owners
+            )
+        if target.stat().st_mode & 0o777 != intent.expected_mode:
+            return None, PlanConflict(
+                intent.relative, "authenticated deletion source mode changed", owners
+            )
+        return PlannedOperation(
+            intent.relative,
+            OperationState.DELETE,
+            "file",
+            owners,
+            mode=intent.expected_mode,
+            expected_digest=digest,
+        ), None
 
     if isinstance(intent, SharedBlockIntent):
         if not target.exists():
@@ -737,6 +811,8 @@ def _merge_keyed_list_entries(
             raise ReconcileError("shared keyed-list nested ownership is incomplete")
         if any(re.fullmatch(r"[0-9a-f]{64}", item) is None for item in entry.adopt_hashes):
             raise ReconcileError("shared keyed-list entry has an invalid owned-value hash")
+        if any(len(alias) != len(entry.key_fields) for alias in entry.adopt_keys):
+            raise ReconcileError("shared keyed-list entry has an invalid adopted key")
         key = tuple(
             json.dumps(
                 entry.value.get(field),
@@ -763,6 +839,13 @@ def _merge_keyed_list_entries(
             tuple(sorted(set(entry.adopt_hashes) | set(previous.adopt_hashes if previous else ()))),
             entry.nested_list_field,
             entry.nested_key_fields,
+            tuple(
+                sorted(
+                    set(entry.adopt_keys)
+                    | set(previous.adopt_keys if previous else ()),
+                    key=repr,
+                )
+            ),
         )
 
     for identity, entry in sorted(grouped.items(), key=lambda item: repr(item[0])):
@@ -784,18 +867,31 @@ def _merge_keyed_list_entries(
             changed = True
         if not isinstance(values, list):
             raise ReconcileError(f"shared keyed-list target is not a list: {'.'.join(path)}")
+        accepted_keys = {key}
+        accepted_keys.update(
+            tuple(
+                json.dumps(
+                    value,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+                for value in alias
+            )
+            for alias in entry.adopt_keys
+        )
         matches = [
             (index, value) for index, value in enumerate(values)
             if isinstance(value, dict)
-            and all(
+            and tuple(
                 json.dumps(
                     value.get(field),
                     sort_keys=True,
                     separators=(",", ":"),
                     ensure_ascii=False,
-                ) == expected
-                for field, expected in zip(key_fields, key)
-            )
+                )
+                for field in key_fields
+            ) in accepted_keys
         ]
         if nested_list_field:
             desired_children = entry.value.get(nested_list_field)
@@ -844,13 +940,29 @@ def _merge_keyed_list_entries(
                 )
                 if owns:
                     owned_outer_matches.append((index, value))
-            if len(owned_outer_matches) > 1 or (
-                not owned_outer_matches and len(matches) > 1
-            ):
+            desired_matches = [
+                (index, value)
+                for index, value in matches
+                if tuple(
+                    json.dumps(
+                        value.get(field),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    for field in key_fields
+                ) == key
+            ]
+            eligible_matches = owned_outer_matches or desired_matches
+            if not eligible_matches:
+                values.append(entry.value)
+                changed = True
+                continue
+            if len(eligible_matches) > 1:
                 raise ReconcileError(
                     f"shared keyed-list nested ownership is ambiguous: {'.'.join(path)}"
                 )
-            _, target_outer = (owned_outer_matches or matches)[0]
+            _, target_outer = eligible_matches[0]
             children = target_outer[nested_list_field]
             child_matches = [
                 (index, child)
@@ -880,6 +992,10 @@ def _merge_keyed_list_entries(
                     changed = True
                 if children[first] != desired_child:
                     children[first] = desired_child
+                    changed = True
+            for field in key_fields:
+                if target_outer.get(field) != entry.value.get(field):
+                    target_outer[field] = entry.value.get(field)
                     changed = True
             continue
         if not matches:
@@ -934,11 +1050,11 @@ def apply_reconciliation(
     *,
     fault: FaultHook | None = None,
 ) -> ApplyResult:
-    """Apply a conflict-free plan as shared-then-provider transaction groups.
+    """Apply a conflict-free plan as one transaction with grouped reporting.
 
     Predictable conflicts and stale plans are rejected before any mutation.
-    Caught failures roll back only the current group from in-memory originals;
-    earlier groups remain committed and a rerun converges forward.
+    Any caught failure rolls back every already-published operation in the
+    plan; group names remain a reporting concern, not commit boundaries.
     """
     if plan.conflicts:
         summary = "; ".join(
@@ -953,10 +1069,23 @@ def apply_reconciliation(
         grouped.setdefault(_operation_group(operation), []).append(operation)
     order = sorted(grouped, key=lambda name: (name != "shared", name))
 
-    results: list[AppliedGroup] = []
-    for group in order:
-        changed = _apply_group(plan.root, group, grouped[group], fault=fault)
-        results.append(AppliedGroup(group, tuple(changed)))
+    ordered_operations = [
+        operation for group in order for operation in grouped[group]
+    ]
+    changed = frozenset(
+        _apply_group(plan.root, "plan", ordered_operations, fault=fault)
+    )
+    results = [
+        AppliedGroup(
+            group,
+            tuple(
+                operation.relative
+                for operation in grouped[group]
+                if operation.relative in changed
+            ),
+        )
+        for group in order
+    ]
     return ApplyResult(tuple(results))
 
 
@@ -974,17 +1103,56 @@ def _preflight_apply(plan: ReconciliationPlan) -> None:
         if operation.state == OperationState.CREATE:
             if target.exists() or target.is_symlink():
                 raise ApplyFailure("preflight", operation.relative, "planned file path is now occupied")
-        elif operation.state == OperationState.UPDATE:
+        elif operation.state in (OperationState.UPDATE, OperationState.DELETE):
             if not target.is_file() or target.is_symlink():
                 raise ApplyFailure("preflight", operation.relative, "planned file changed type")
             existing = target.read_text(encoding="utf-8")
             if operation.expected_digest != _digest(existing):
                 raise ApplyFailure("preflight", operation.relative, "planned file content changed")
+            if (
+                operation.state == OperationState.DELETE
+                and target.stat().st_mode & 0o777 != operation.mode
+            ):
+                raise ApplyFailure("preflight", operation.relative, "planned file mode changed")
         elif operation.expected_digest is not None:
             if not target.is_file() or target.is_symlink():
                 raise ApplyFailure("preflight", operation.relative, "unchanged file changed type")
             if operation.expected_digest != _digest(target.read_text(encoding="utf-8")):
                 raise ApplyFailure("preflight", operation.relative, "unchanged file content changed")
+
+
+def _validate_operation_preimage(
+    identity: RootIdentity, operation: PlannedOperation
+) -> Path:
+    target = _revalidate(identity, operation.relative)
+    if operation.state == OperationState.CREATE:
+        if target.exists() or target.is_symlink():
+            raise ReconcileError("planned file path is now occupied")
+    elif operation.state in (OperationState.UPDATE, OperationState.DELETE):
+        if not target.is_file() or target.is_symlink():
+            raise ReconcileError("planned file changed type")
+        if operation.expected_digest != _digest(target.read_text(encoding="utf-8")):
+            raise ReconcileError("planned file content changed")
+        if (
+            operation.state == OperationState.DELETE
+            and target.stat().st_mode & 0o777 != operation.mode
+        ):
+            raise ReconcileError("planned file mode changed")
+    return target
+
+
+def _validate_managed_postimage(target: Path, operation: PlannedOperation) -> None:
+    if operation.state == OperationState.DELETE:
+        if target.exists() or target.is_symlink():
+            raise ReconcileError("deleted postimage reappeared")
+        return
+    if target.is_symlink() or not target.is_file():
+        raise ReconcileError("managed postimage changed type")
+    expected = (operation.content or "").encode("utf-8")
+    if target.read_bytes() != expected:
+        raise ReconcileError("managed postimage changed")
+    if target.stat().st_mode & 0o777 != operation.mode:
+        raise ReconcileError("managed postimage mode changed")
 
 
 def _operation_group(operation: PlannedOperation) -> str:
@@ -1027,25 +1195,33 @@ def _apply_group(
             current = operation
             if operation.kind == "directory":
                 continue
-            target = _revalidate(identity, operation.relative)
+            target = _validate_operation_preimage(identity, operation)
             _inject(fault, "before_stage", target)
-            target = _revalidate(identity, operation.relative)
-            if operation.state == OperationState.UPDATE:
+            target = _validate_operation_preimage(identity, operation)
+            if operation.state in (OperationState.UPDATE, OperationState.DELETE):
                 originals[operation.relative] = (
                     target.read_bytes(),
                     target.stat().st_mode & 0o777,
                 )
             else:
                 originals[operation.relative] = None
-            stages[operation.relative] = _stage_file(target, operation.content or "", operation.mode)
+            if operation.state != OperationState.DELETE:
+                stages[operation.relative] = _stage_file(
+                    target, operation.content or "", operation.mode
+                )
 
         for operation in mutable:
             current = operation
             if operation.kind == "directory":
                 continue
-            target = _revalidate(identity, operation.relative)
+            target = _validate_operation_preimage(identity, operation)
             _inject(fault, "before_replace", target)
-            target = _revalidate(identity, operation.relative)
+            target = _validate_operation_preimage(identity, operation)
+            if operation.state == OperationState.DELETE:
+                target.unlink()
+                _fsync_directory(target.parent)
+                committed.append(operation)
+                continue
             stage, parent_identity = stages[operation.relative]
             if not _directory_matches(target.parent, parent_identity):
                 raise ReconcileError(f"target parent identity changed: {target.parent}")
@@ -1060,6 +1236,7 @@ def _apply_group(
             try:
                 _inject(fault, "before_restore", target)
                 target = _revalidate(identity, operation.relative)
+                _validate_managed_postimage(target, operation)
                 original = originals[operation.relative]
                 if original is None:
                     target.unlink(missing_ok=True)
@@ -1077,7 +1254,8 @@ def _apply_group(
         detail = str(exc)
         if rollback_errors:
             detail += "; rollback incomplete: " + "; ".join(rollback_errors)
-        raise ApplyFailure(group, current.relative, detail) from exc
+        failure_group = _operation_group(current) if group == "plan" else group
+        raise ApplyFailure(failure_group, current.relative, detail) from exc
     finally:
         for stage, parent_identity in stages.values():
             _safe_unlink(stage, parent_identity)
@@ -1093,6 +1271,8 @@ def _required_directories(
             modes[target] = operation.mode
             parent = target.parent
         else:
+            if operation.state == OperationState.DELETE:
+                continue
             parent = target.parent
         while parent != root:
             modes.setdefault(parent, 0o755)

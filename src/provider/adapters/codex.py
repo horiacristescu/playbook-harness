@@ -12,10 +12,9 @@ Playbook uses both surfaces:
   - AGENTS.md for default workflow teaching.
   - Optional hook installation for stronger stop-time steering.
 
-Session identity: no CODEX_SESSION_ID env var. Resolve via:
-  1. $PLAYBOOK_SESSION_ID (set by bin/playbook-codex wrapper — preferred)
-  2. SQLite: ~/.codex/state_5.sqlite WHERE cwd=$PROJECT_ROOT ORDER BY updated_at DESC
-  3. PID-walk fallback: find 'codex' in parent process chain, use pid-<N>
+Session identity: Codex exposes one native thread ID as hook payload
+`session_id` and command environment `CODEX_THREAD_ID`. SQLite is used only to
+locate the matching native transcript, never to guess Playbook state identity.
 
 Chat log: reads ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl
   - session_meta record at top of file has id and cwd for verification
@@ -34,6 +33,12 @@ from ..adapter import ProviderAdapter, Invocation
 from ..capabilities import ProviderCapabilities, SessionFacts
 from ..codex_hooks import codex_config_path, enable_codex_hooks_feature, install_project_hooks
 from ..policy import Decision
+from ..session_identity import (
+    SessionConformance,
+    command_session_id,
+    declared_session_conformance,
+    scrub_inherited_session_identity,
+)
 
 # Threshold for filtering AGENTS.md injections (very long "user" messages)
 _AGENTS_MD_LENGTH_THRESHOLD = 2000
@@ -77,6 +82,7 @@ class CodexAdapter(ProviderAdapter):
         agent_args = (["--search"] if web_search else []) + inv.argv
         env = os.environ.copy()
         env["PLAYBOOK_SESSION_ID"] = self._session_id or "judge"
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         from provider import sandbox as _sandbox
         result = _sandbox.run(
             "codex", agent_args,
@@ -157,16 +163,22 @@ class CodexAdapter(ProviderAdapter):
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
+    def interactive_argv(self, *, prompt: str, model: Optional[str] = None,
+                         resume_session_id: Optional[str] = None) -> list[str]:
+        options = ["--model", model] if model else []
+        if resume_session_id:
+            return ["resume", *options, resume_session_id, prompt]
+        return [*options, prompt]
+
     def launch_interactive(self, project_root: Path, **kwargs) -> int:
-        """Launch `codex` TUI with PLAYBOOK_SESSION_ID pre-set.
+        """Launch `codex` TUI; Codex creates and exposes its native thread ID.
 
         For the user-facing entry point (shell script with project-root
         discovery), use `bin/playbook-codex` instead.  This method is for
         programmatic use where the caller already knows the project root.
         """
-        import uuid
-        env = os.environ.copy()
-        env["PLAYBOOK_SESSION_ID"] = self._session_id or str(uuid.uuid4())
+        env = scrub_inherited_session_identity(os.environ)
+        env["PLAYBOOK_PROVIDER"] = "codex"
         env["PLAYBOOK_PROJECT_ROOT"] = str(project_root)
         result = subprocess.run(["codex"], cwd=project_root, env=env, **kwargs)
         return result.returncode
@@ -176,6 +188,7 @@ class CodexAdapter(ProviderAdapter):
         import uuid
         env = os.environ.copy()
         env["PLAYBOOK_SESSION_ID"] = self._session_id or str(uuid.uuid4())
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         env["PLAYBOOK_PROJECT_ROOT"] = str(project_root)
         result = subprocess.run(
             ["codex", "exec", prompt],
@@ -192,7 +205,8 @@ class CodexAdapter(ProviderAdapter):
         system is active: UserPromptSubmit, PreToolUse (Bash only), PostToolUse
         (Bash only), and Stop all fire at turn scope and support block+reason.
 
-        session_id_in_payload: False — not observed in hook payloads.
+        session_id_in_payload is true when this hook system is active; every
+        lifecycle payload carries the same native ID as `CODEX_THREAD_ID`.
         """
         hooks_enabled = self._probe_stop_hook() and self._has_playbook_hooks()
         log_base = Path.home() / ".codex" / "sessions"
@@ -202,9 +216,17 @@ class CodexAdapter(ProviderAdapter):
             has_pre_tool_hook=hooks_enabled,   # Bash-only when enabled
             has_post_tool_hook=hooks_enabled,  # Bash-only when enabled
             has_stop_hook=hooks_enabled,
-            session_id_in_payload=False,
+            session_id_in_payload=hooks_enabled,
             session_log_format="jsonl",
             session_log_base=log_base if log_base.exists() else None,
+        )
+
+    def session_conformance(self) -> SessionConformance:
+        return declared_session_conformance(
+            "codex",
+            exact_resume=True,
+            resume_cwd="recorded conversation cwd with codex resume <native-id>",
+            supported=True,
         )
 
     def _probe_stop_hook(self, config_path: Optional[Path] = None) -> bool:
@@ -365,47 +387,6 @@ class CodexAdapter(ProviderAdapter):
 
     @classmethod
     def from_env(cls, project_root: Path) -> "CodexAdapter":
-        """Construct adapter using best available session ID source.
-
-        Priority:
-        1. PLAYBOOK_SESSION_ID (set by bin/playbook-codex wrapper)
-        2. PID-walk to find 'codex' parent process
-        3. SQLite-derived rollout UUID (resolved lazily in session_log_path)
-        """
-        session_id = os.environ.get("PLAYBOOK_SESSION_ID", "")
-        if not session_id:
-            session_id = _pid_walk_session_id(provider_names=["codex"])
+        """Construct from Codex's authoritative command environment."""
+        session_id = command_session_id("codex", os.environ)
         return cls(session_id=session_id, project_root=project_root)
-
-
-def _pid_walk_session_id(provider_names: list[str]) -> str:
-    """Walk PID ancestry to find a provider process; return pid-<N>.
-
-    Falls back to "default" if no provider process is found in ancestry.
-    Used only for Codex/agy/pi — Claude provides session_id in stdin directly.
-    """
-    try:
-        import os as _os
-        pid = _os.getpid()
-        for _ in range(10):  # max 10 hops up the tree
-            try:
-                result = subprocess.run(
-                    ["ps", "-o", "ppid=,comm=", "-p", str(pid)],
-                    capture_output=True, text=True, timeout=1
-                )
-                parts = result.stdout.strip().split(None, 1)
-                if len(parts) < 2:
-                    break
-                ppid, comm = int(parts[0]), parts[1].strip()
-                # Strip path prefix if present
-                comm_name = comm.split("/")[-1]
-                if comm_name in provider_names:
-                    return f"pid-{pid}"
-                if ppid <= 1:
-                    break
-                pid = ppid
-            except (ValueError, subprocess.TimeoutExpired, OSError):
-                break
-    except Exception:
-        pass
-    return "default"

@@ -1,0 +1,27 @@
+#!/bin/bash
+# Thin launcher for the provider-native managed Playbook session lifecycle.
+set -e
+export PYTHONDONTWRITEBYTECODE=1
+
+python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' 2>/dev/null \
+    || { echo "Playbook needs python3 >= 3.10 (found: $(python3 --version 2>&1))" >&2; exit 1; }
+
+# Resolve managed/development symlinks before deriving the runtime root. A
+# launcher exposed from ~/.local/bin must still load the checkout it targets.
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [ -L "$SCRIPT_PATH" ]; do
+    LINK_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+    LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+    case "$LINK_TARGET" in
+        /*) SCRIPT_PATH="$LINK_TARGET" ;;
+        *) SCRIPT_PATH="$LINK_DIR/$LINK_TARGET" ;;
+    esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+RUNTIME_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+if [ ! -f "$RUNTIME_ROOT/src/session_cli.py" ]; then
+    echo "Error: session module not found at $RUNTIME_ROOT/src/session_cli.py" >&2
+    exit 1
+fi
+
+PYTHONPATH="$RUNTIME_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m session_cli "$@"

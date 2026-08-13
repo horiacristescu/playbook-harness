@@ -3,6 +3,7 @@ description: Vertical retro — infer intent blind from a task's 4 layers, recon
 argument-hint: "<task-number> [--base REF --head REF] [--chat-file PATH]"
 allowed-tools: [Read, Bash, Edit, Grep, Glob]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/intent.md","source_hash":"e793a20e0e444abfb474bded41ea5af023dc2413bfb8170ad4d4c38b7f5fe5e4"} -->
 
 # Intent Review (vertical retro)
 

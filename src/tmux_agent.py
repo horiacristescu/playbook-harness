@@ -7,10 +7,12 @@ project initialization and tmux configuration remain outside this module's scope
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -27,6 +29,10 @@ from typing import Any, Iterator, Mapping
 
 SCHEMA = 1
 OWNER_MARKER = "playbook-tmux-agent/schema-1"
+SERVER_OWNER_MARKER = "playbook-tmux-agent-server/schema-1"
+DEFAULT_TMUX_SOCKET = "playbook-harness-v1"
+PANE_EXIT_RECORD_GRACE = 2.0
+READY_STABILITY_INTERVAL = 0.05
 DEFAULT_NAMESPACE = "default"
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 KNOWN_AGENTS = frozenset({"claude", "codex", "agy", "pi", "omp", "command"})
@@ -140,8 +146,17 @@ def utc_timestamp() -> str:
 
 
 class TmuxClient:
-    def __init__(self, binary: str = "tmux") -> None:
+    def __init__(
+        self, binary: str = "tmux", socket_name: str | None = DEFAULT_TMUX_SOCKET
+    ) -> None:
         self.binary = binary
+        self.socket_name = socket_name
+
+    def command(self, arguments: list[str]) -> list[str]:
+        prefix = [self.binary]
+        if self.socket_name is not None:
+            prefix.extend(["-L", self.socket_name])
+        return [*prefix, *arguments]
 
     def require(self) -> None:
         if shutil.which(self.binary) is None:
@@ -159,7 +174,7 @@ class TmuxClient:
     ) -> subprocess.CompletedProcess[bytes]:
         try:
             completed = subprocess.run(
-                [self.binary, *arguments],
+                self.command(arguments),
                 input=input_bytes,
                 capture_output=True,
                 check=False,
@@ -175,7 +190,21 @@ class TmuxClient:
         return self.run(arguments).stdout.decode("utf-8", errors="replace").rstrip("\n")
 
     def has_session(self, session: str) -> bool:
-        return self.run(["has-session", "-t", session], check=False).returncode == 0
+        completed = self.run(["has-session", "-t", session], check=False)
+        if completed.returncode == 0:
+            return True
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        absent_markers = (
+            "can't find session",
+            "no server running",
+            "no such file or directory",
+            "connection refused",
+        )
+        if any(marker in detail.casefold() for marker in absent_markers):
+            return False
+        raise TmuxAgentError(
+            detail or f"tmux could not determine whether session exists: {session}"
+        )
 
 
 def _resolved_cwd(value: str | os.PathLike[str] | None) -> Path:
@@ -193,6 +222,60 @@ def _tmux_option(client: TmuxClient, session: str, name: str, value: str) -> Non
     client.run(["set-option", "-t", session, name, value])
 
 
+def _server_owner(client: TmuxClient) -> str | None:
+    completed = client.run(
+        ["show-option", "-gv", "@playbook_server_owner"], check=False
+    )
+    if completed.returncode != 0:
+        return None
+    value = completed.stdout.decode("utf-8", errors="replace").strip()
+    return value or None
+
+
+def require_owned_server(client: TmuxClient) -> None:
+    if _server_owner(client) != SERVER_OWNER_MARKER:
+        raise TmuxAgentError("tmux server ownership mismatch; refusing operation")
+
+
+def _prepare_owned_server(client: TmuxClient) -> bool:
+    exists = client.run(["list-sessions"], check=False).returncode == 0
+    if exists:
+        require_owned_server(client)
+    return exists
+
+
+def _configure_owned_server(client: TmuxClient, *, already_owned: bool) -> None:
+    if not already_owned:
+        client.run(["set-option", "-g", "@playbook_server_owner", SERVER_OWNER_MARKER])
+    require_owned_server(client)
+    client.run(["set-option", "-s", "exit-empty", "off"])
+    client.run(["set-option", "-g", "mouse", "on"])
+    client.run(
+        [
+            "bind-key",
+            "-n",
+            "WheelUpPane",
+            "if-shell",
+            "-F",
+            "#{pane_in_mode}",
+            "send-keys -X -N 3 scroll-up",
+            "copy-mode -e ; send-keys -X -N 3 scroll-up",
+        ]
+    )
+    client.run(
+        [
+            "bind-key",
+            "-n",
+            "WheelDownPane",
+            "if-shell",
+            "-F",
+            "#{pane_in_mode}",
+            "send-keys -X -N 3 scroll-down",
+            "select-pane -t =",
+        ]
+    )
+
+
 def _pane_fields(client: TmuxClient, session: str) -> dict[str, Any]:
     format_string = "|".join(
         [
@@ -201,10 +284,12 @@ def _pane_fields(client: TmuxClient, session: str) -> dict[str, Any]:
             "#{pane_dead}",
             "#{pane_dead_status}",
             "#{session_activity}",
+            "#{pane_tty}",
+            "#{pane_dead_time}",
         ]
     )
     values = client.output(["display-message", "-p", "-t", session, format_string]).split("|")
-    if len(values) != 5:
+    if len(values) != 7:
         raise TmuxAgentError(f"tmux returned malformed pane state for {session}")
     return {
         "pane_id": values[0],
@@ -212,7 +297,28 @@ def _pane_fields(client: TmuxClient, session: str) -> dict[str, Any]:
         "pane_dead": values[2] == "1",
         "pane_dead_status": int(values[3]) if values[3] else None,
         "activity_epoch": int(values[4]),
+        "pane_tty": values[5],
+        "pane_dead_epoch": int(values[6]) if values[6] else None,
     }
+
+
+def require_flat_topology(
+    client: TmuxClient, session: str, *, expected_pane: str | None = None
+) -> str:
+    windows = client.output(
+        ["list-windows", "-t", session, "-F", "#{window_id}|#{window_panes}"]
+    ).splitlines()
+    panes = client.output(
+        ["list-panes", "-s", "-t", session, "-F", "#{pane_id}"]
+    ).splitlines()
+    if len(windows) != 1 or not windows[0].endswith("|1") or len(panes) != 1:
+        raise TmuxAgentError(
+            f"owned tmux topology must be exactly one window and one pane: {session}"
+        )
+    pane = panes[0]
+    if expected_pane is not None and pane != expected_pane:
+        raise TmuxAgentError(f"owned tmux pane identity changed: {session}")
+    return pane
 
 
 def load_run(
@@ -240,6 +346,7 @@ def require_owned_session(
 ) -> tuple[TmuxClient, str]:
     tmux = TmuxClient() if client is None else client
     tmux.require()
+    require_owned_server(tmux)
     session = metadata.get("tmux_session")
     if not isinstance(session, str) or not tmux.has_session(session):
         raise TmuxAgentError(f"owned tmux session is unavailable: {session or '(missing)'}")
@@ -248,6 +355,12 @@ def require_owned_session(
     expected_identity = f"{metadata['namespace']}/{metadata['name']}"
     if owner != OWNER_MARKER or identity != expected_identity:
         raise TmuxAgentError(f"tmux session ownership mismatch: {session}")
+    expected_pane = metadata.get("pane_id")
+    require_flat_topology(
+        tmux,
+        session,
+        expected_pane=expected_pane if isinstance(expected_pane, str) else None,
+    )
     return tmux, session
 
 
@@ -270,18 +383,112 @@ def send_message(
         raise TmuxAgentError(
             f"message contains terminal control bytes that cannot be preserved literally: {rendered}"
         )
-    _, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
     tmux, session = require_owned_session(metadata, client)
+    pane_state = _pane_fields(tmux, session)
+    if pane_state["pane_dead"]:
+        raise TmuxAgentError(f"cannot send to dead tmux pane: {session}")
     pane = metadata.get("pane_id")
     target = pane if isinstance(pane, str) and pane else session
     buffer_name = f"pbta-{os.getpid()}-{uuid.uuid4().hex[:12]}"
-    tmux.run(["load-buffer", "-b", buffer_name, "-"], input_bytes=message.encode("utf-8"))
+    lock_fd = os.open(paths.run_dir, os.O_RDONLY)
     try:
-        tmux.run(["paste-buffer", "-p", "-d", "-b", buffer_name, "-t", target])
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        commands = [
+            "load-buffer",
+            "-b",
+            buffer_name,
+            "-",
+            ";",
+            "paste-buffer",
+            "-p",
+            "-d",
+            "-b",
+            buffer_name,
+            "-t",
+            target,
+        ]
+        tmux.run(commands, input_bytes=message.encode("utf-8"))
+        if enter:
+            # Full-screen editors such as Claude Code consume bracketed paste
+            # asynchronously. An Enter in the same tmux command can arrive
+            # before the editor has closed the paste transaction and becomes
+            # another newline in the buffer. Submit as a later terminal event.
+            time.sleep(0.1)
+            tmux.run(["send-keys", "-t", target, "Enter"])
     finally:
-        tmux.run(["delete-buffer", "-b", buffer_name], check=False)
-    if enter:
-        tmux.run(["send-keys", "-t", target, "Enter"])
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def label_run(
+    *,
+    name: str,
+    label: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    client: TmuxClient | None = None,
+) -> None:
+    """Expose a safe human label without changing the durable run identity."""
+
+    validate_identifier(label, label="session label")
+    _, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    tmux, session = require_owned_session(metadata, client)
+    tmux.run(["set-option", "-t", session, "status-left", f"#[bold] {label} #[default]"])
+    tmux.run(["set-option", "-t", session, "status-left-length", "72"])
+    tmux.run(["set-window-option", "-t", f"{session}:0", "automatic-rename", "off"])
+    tmux.run(["rename-window", "-t", f"{session}:0", label])
+
+
+def peek_run(
+    *,
+    name: str,
+    lines: int = 50,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    client: TmuxClient | None = None,
+) -> str:
+    if lines < 1 or lines > 10_000:
+        raise TmuxAgentError("lines must be between 1 and 10000")
+    _, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    tmux, session = require_owned_session(metadata, client)
+    pane = str(metadata["pane_id"])
+    return tmux.output(["capture-pane", "-p", "-t", pane, "-S", f"-{lines}"])
+
+
+def detach_run(
+    *,
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    client: TmuxClient | None = None,
+) -> None:
+    _, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    tmux, session = require_owned_session(metadata, client)
+    tmux.run(["detach-client", "-s", session], check=False)
+
+
+def attach_run(
+    *,
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    client: TmuxClient | None = None,
+    environment: Mapping[str, str] | None = None,
+) -> int:
+    values = os.environ if environment is None else environment
+    if values.get("TMUX"):
+        raise TmuxAgentError(
+            "refusing nested tmux attach; run attach from an ordinary terminal"
+        )
+    _, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    tmux, session = require_owned_session(metadata, client)
+    completed = subprocess.run(
+        tmux.command(["attach-session", "-t", session]), check=False
+    )
+    if completed.returncode != 0:
+        raise TmuxAgentError(f"could not attach to tmux session: {session}")
+    return completed.returncode
 
 
 def read_log(
@@ -365,13 +572,33 @@ def status_run(
         pane = _pane_fields(tmux, session)
         terminal_state = "dead" if pane["pane_dead"] else "active"
 
+    # The runner publishes result.json before returning, but it can do so after
+    # this observer's first exists() check and before tmux reports the pane dead.
+    # Recheck at that boundary so a completed run never transiently becomes lost.
+    if result is None and (pane is None or pane["pane_dead"]) and paths.result.exists():
+        result = read_json(paths.result, kind="run result")
+
     if result is not None:
         state = result.get("state")
-    elif pane is None or pane["pane_dead"]:
-        state = "lost"
+    elif pane is None:
+        try:
+            _owned_runner_without_tmux(paths, metadata)
+        except TmuxAgentError:
+            state = "lost"
+        else:
+            state = "orphaned"
+    elif pane["pane_dead"]:
+        dead_epoch = pane.get("pane_dead_epoch")
+        if (
+            isinstance(dead_epoch, int)
+            and time.time() - dead_epoch < PANE_EXIT_RECORD_GRACE
+        ):
+            state = "recording_exit"
+        else:
+            state = "lost"
     else:
         state = metadata.get("state", "starting")
-        if state not in {"starting", "running"}:
+        if state not in {"starting", "running", "finishing"}:
             state = "running"
 
     status = dict(metadata)
@@ -445,6 +672,60 @@ def _process_group_exists(process_group: int) -> bool:
     return True
 
 
+def _owned_runner_without_tmux(paths: RunPaths, metadata: Mapping[str, Any]) -> int:
+    """Authenticate the still-live runner when its tmux session disappeared."""
+
+    runner_pid = metadata.get("runner_pid")
+    runner_group = metadata.get("runner_process_group")
+    terminal_session = metadata.get("terminal_session")
+    if (
+        not isinstance(runner_pid, int)
+        or runner_pid <= 1
+        or runner_pid != metadata.get("pane_pid")
+        or runner_group != runner_pid
+        or not isinstance(terminal_session, int)
+    ):
+        raise TmuxAgentError(
+            "owned tmux session is unavailable and runner identity is incomplete"
+        )
+    try:
+        if os.getpgid(runner_pid) != runner_group or os.getsid(runner_pid) != terminal_session:
+            raise TmuxAgentError(
+                "owned runner process identity changed after tmux session loss"
+            )
+        command = subprocess.check_output(
+            ["ps", "-ww", "-p", str(runner_pid), "-o", "command="],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except ProcessLookupError as exc:
+        raise TmuxAgentError(
+            "owned runner is no longer alive after tmux session loss"
+        ) from exc
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise TmuxAgentError(
+            f"cannot authenticate owned runner after tmux session loss: {exc}"
+        ) from exc
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        raise TmuxAgentError(
+            "owned runner command is malformed after tmux session loss"
+        ) from exc
+    expected = [
+        str(Path(__file__).resolve()),
+        "_run",
+        str(paths.meta.resolve()),
+        str(paths.configured.resolve()),
+        str(paths.ready.resolve()),
+    ]
+    if len(argv) < len(expected) or argv[-len(expected):] != expected:
+        raise TmuxAgentError(
+            "owned runner command changed after tmux session loss; refusing stop"
+        )
+    return runner_pid
+
+
 def _terminate_process_group(process_group: int, *, grace: float) -> None:
     """Boundedly terminate one group while its runner still proves ownership."""
 
@@ -480,43 +761,65 @@ def stop_run(
     if grace < 0:
         raise TmuxAgentError("grace must be non-negative")
     paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
-    tmux, session = require_owned_session(metadata, client)
+    tmux = TmuxClient() if client is None else client
+    session = str(metadata["tmux_session"])
 
     if paths.result.exists():
         result = read_json(paths.result, kind="run result")
-        tmux.run(["kill-session", "-t", session])
+        if result.get("phase") == "runner":
+            if tmux.has_session(session):
+                require_owned_session(metadata, tmux)
+            raise TmuxAgentError(
+                "runner failed before cleanup proof; retained pane and process-group evidence"
+            )
+        if tmux.has_session(session):
+            tmux, session = require_owned_session(metadata, tmux)
+            tmux.run(["kill-session", "-t", session])
         return result
+
+    owned_session = tmux.has_session(session)
+    if owned_session:
+        tmux, session = require_owned_session(metadata, tmux)
+        pane = _pane_fields(tmux, session)
+        runner_pid = metadata.get("pane_pid")
+        if (
+            not isinstance(runner_pid, int)
+            or runner_pid <= 1
+            or runner_pid != pane["pane_pid"]
+            or pane["pane_dead"]
+        ):
+            raise TmuxAgentError(
+                "owned runner identity is unavailable or changed; refusing stop"
+            )
+    else:
+        runner_pid = _owned_runner_without_tmux(paths, metadata)
 
     atomic_write_json(
         paths.run_dir / "stop.request.json",
-        {"schema": SCHEMA, "requested_at": utc_timestamp()},
+        {"schema": SCHEMA, "requested_at": utc_timestamp(), "grace": grace},
     )
-    deadline = time.monotonic() + grace
-    process_group: int | None = None
-    while time.monotonic() <= deadline:
-        current = read_json(paths.meta, kind="run metadata")
-        value = current.get("process_group")
-        if isinstance(value, int) and value > 1:
-            process_group = value
-            break
-        if paths.result.exists():
-            break
-        time.sleep(0.01)
+    try:
+        os.kill(runner_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
 
-    if process_group is not None:
-        _terminate_process_group(process_group, grace=max(0.0, deadline - time.monotonic()))
-
-    result_deadline = time.monotonic() + 2.0
+    # Only the live runner may signal its foreground process group. The
+    # controller authenticates and nudges the runner PID, then waits for the
+    # runner to clean the group and publish a terminal result.
+    result_deadline = time.monotonic() + grace + 3.0
     while not paths.result.exists() and time.monotonic() < result_deadline:
         time.sleep(0.02)
-    tmux.run(["kill-session", "-t", session], check=False)
     if not paths.result.exists():
-        raise TmuxAgentError("owned process group stopped but runner result is missing")
+        raise TmuxAgentError(
+            "owned runner did not publish a stop result; retained tmux state for diagnosis"
+        )
+    if owned_session:
+        tmux.run(["kill-session", "-t", session], check=False)
     return read_json(paths.result, kind="run result")
 
 
 def _write_start_failure(paths: RunPaths, message: str) -> None:
-    atomic_write_json(
+    publish_json_once(
         paths.result,
         {
             "schema": SCHEMA,
@@ -527,6 +830,97 @@ def _write_start_failure(paths: RunPaths, message: str) -> None:
             "exit_status": None,
         },
     )
+
+
+def _pane_exit_hook(meta_path: Path) -> str:
+    command = shlex.join(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "_pane_exit",
+            str(meta_path),
+            "#{pane_id}",
+            "#{pane_dead_status}",
+            "#{pane_dead_signal}",
+        ]
+    )
+    return f"run-shell {shlex.quote(command)}"
+
+
+def _pane_exit_main(
+    meta_path: Path, pane_id: str, status_text: str, signal_text: str
+) -> int:
+    paths = RunPaths(
+        root=meta_path.parent.parent.parent,
+        namespace=meta_path.parent.parent.name,
+        name=meta_path.parent.name,
+    )
+    metadata = read_json(meta_path, kind="metadata")
+    if metadata.get("owner") != OWNER_MARKER or metadata.get("pane_id") != pane_id:
+        return 126
+    runner_status = int(status_text) if status_text else None
+    runner_signal = signal_text or None
+    signal_number = None
+    if runner_signal is not None:
+        candidate = getattr(signal, f"SIG{runner_signal.upper()}", None)
+        if isinstance(candidate, int):
+            signal_number = candidate
+    exit_status = -signal_number if signal_number is not None else runner_status
+    result: dict[str, Any] = {
+        "schema": SCHEMA,
+        "state": "failed",
+        "phase": "runner",
+        "error": "tmux runner exited before publishing its terminal result",
+        "finished_at": utc_timestamp(),
+        "exit_status": exit_status,
+        "runner_exit_status": runner_status,
+        "runner_exit_signal": runner_signal,
+    }
+    for key in ("runner_pid", "child_pid", "process_group"):
+        if key in metadata:
+            result[key] = metadata[key]
+    publish_json_once(paths.result, result)
+    return 0
+
+
+def _terminal_foreground_group(fd: int = 0) -> int:
+    try:
+        return os.tcgetpgrp(fd)
+    except OSError as exc:
+        raise TmuxAgentError(f"runner has no usable controlling terminal: {exc}") from exc
+
+
+def _set_terminal_foreground_group(process_group: int, fd: int = 0) -> None:
+    previous = signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+    try:
+        os.tcsetpgrp(fd, process_group)
+    except OSError as exc:
+        raise TmuxAgentError(
+            f"could not give the pane terminal to process group {process_group}: {exc}"
+        ) from exc
+    finally:
+        signal.signal(signal.SIGTTOU, previous)
+
+
+def _exec_after_foreground(start_fd: int, status_fd: int, command: list[str]) -> int:
+    """Wait until the runner owns the foreground handoff, then replace this shim."""
+
+    try:
+        started = os.read(start_fd, 1)
+    finally:
+        os.close(start_fd)
+    if started != b"1":
+        return 125
+    os.set_inheritable(status_fd, False)
+    try:
+        os.execvp(command[0], command)
+    except OSError as exc:
+        try:
+            os.write(status_fd, str(exc).encode("utf-8", errors="replace"))
+        finally:
+            os.close(status_fd)
+        print(f"agent launch failed: {exc}", file=sys.stderr, flush=True)
+        return 127
 
 
 def start_run(
@@ -551,32 +945,55 @@ def start_run(
         if not ENVIRONMENT_RE.fullmatch(key) or "\0" in value:
             raise TmuxAgentError(f"invalid environment override: {key!r}")
 
-    reserve_run(paths)
-    paths.log.touch(mode=0o600, exist_ok=False)
-    session = tmux_session_name(namespace, name)
-    metadata: dict[str, Any] = {
-        "schema": SCHEMA,
-        "owner": OWNER_MARKER,
-        "namespace": namespace,
-        "name": name,
-        "tmux_session": session,
-        "command": command,
-        "agent": agent,
-        "model": model,
-        "cwd": str(working_directory),
-        "environment_keys": sorted(overrides),
-        "started_at": utc_timestamp(),
-        "state": "starting",
-    }
-    atomic_write_json(paths.meta, metadata)
+    server_lock_fd = os.open(paths.root, os.O_RDONLY)
+    fcntl.flock(server_lock_fd, fcntl.LOCK_EX)
+    try:
+        server_already_owned = _prepare_owned_server(tmux)
+        reserve_run(paths)
+    except Exception:
+        fcntl.flock(server_lock_fd, fcntl.LOCK_UN)
+        os.close(server_lock_fd)
+        raise
+    try:
+        paths.log.touch(mode=0o600, exist_ok=False)
+        session = tmux_session_name(namespace, name)
+        metadata: dict[str, Any] = {
+            "schema": SCHEMA,
+            "owner": OWNER_MARKER,
+            "namespace": namespace,
+            "name": name,
+            "tmux_session": session,
+            "command": command,
+            "agent": agent,
+            "model": model,
+            "cwd": str(working_directory),
+            "environment_keys": sorted(overrides),
+            "started_at": utc_timestamp(),
+            "state": "starting",
+        }
+        atomic_write_json(paths.meta, metadata)
+    except Exception:
+        fcntl.flock(server_lock_fd, fcntl.LOCK_UN)
+        os.close(server_lock_fd)
+        raise
 
     if tmux.has_session(session):
         message = f"tmux session name collision: {session}"
         _write_start_failure(paths, message)
+        fcntl.flock(server_lock_fd, fcntl.LOCK_UN)
+        os.close(server_lock_fd)
         raise IdentityExistsError(message)
 
-    runner = [sys.executable, str(Path(__file__).resolve()), "_run", str(paths.meta), str(paths.ready)]
+    runner = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "_run",
+        str(paths.meta),
+        str(paths.configured),
+        str(paths.ready),
+    ]
     session_created = False
+    setup_complete = False
     try:
         new_session = ["new-session", "-d", "-s", session, "-c", str(working_directory)]
         inherited_path = os.environ.get("PATH")
@@ -587,31 +1004,65 @@ def start_run(
         new_session.extend(["--", *runner])
         tmux.run(new_session)
         session_created = True
+        _configure_owned_server(tmux, already_owned=server_already_owned)
+        fcntl.flock(server_lock_fd, fcntl.LOCK_UN)
+        os.close(server_lock_fd)
+        server_lock_fd = -1
         _tmux_option(tmux, session, "remain-on-exit", "on")
         _tmux_option(tmux, session, "@playbook_owner", OWNER_MARKER)
         _tmux_option(tmux, session, "@playbook_identity", f"{namespace}/{name}")
         _tmux_option(tmux, session, "@playbook_state_dir", str(paths.run_dir))
         tmux.run(["pipe-pane", "-t", session, "-o", f"cat >> {shlex.quote(str(paths.log))}"])
+        require_flat_topology(tmux, session)
         metadata.update(_pane_fields(tmux, session))
         atomic_write_json(paths.meta, metadata)
-        paths.ready.touch(mode=0o600, exist_ok=False)
-        return metadata
+        tmux.run(["set-hook", "-t", session, "pane-died", _pane_exit_hook(paths.meta)])
+        paths.configured.touch(mode=0o600, exist_ok=False)
+        setup_complete = True
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            if paths.ready.exists():
+                running = read_json(paths.meta, kind="run metadata")
+                if running.get("state") != "running":
+                    raise TmuxAgentError("runner readiness disagrees with durable state")
+                require_owned_session(running, tmux)
+                return running
+            if paths.result.exists():
+                result = read_json(paths.result, kind="run result")
+                if result.get("phase") in {"start", "runner"}:
+                    detail = result.get("error") or (
+                        f"runner exited before readiness: state={result.get('state')} "
+                        f"exit={result.get('exit_status')}"
+                    )
+                    raise TmuxAgentError(str(detail))
+                return status_run(
+                    name=name,
+                    namespace=namespace,
+                    state_dir=paths.root,
+                    client=tmux,
+                )
+            time.sleep(0.01)
+        raise TmuxAgentError("runner did not become ready within 30 seconds")
     except Exception as exc:
         message = str(exc)
-        if session_created:
+        if server_lock_fd >= 0:
+            fcntl.flock(server_lock_fd, fcntl.LOCK_UN)
+            os.close(server_lock_fd)
+        if session_created and not setup_complete:
             tmux.run(["kill-session", "-t", session], check=False)
         _write_start_failure(paths, message)
         raise
 
 
-def _runner_main(meta_path: Path, ready_path: Path) -> int:
+def _runner_main(meta_path: Path, configured_path: Path, ready_path: Path) -> int:
     paths = RunPaths(
         root=meta_path.parent.parent.parent,
         namespace=meta_path.parent.parent.name,
         name=meta_path.parent.name,
     )
     deadline = time.monotonic() + 30.0
-    while not ready_path.exists():
+    while not configured_path.exists():
         if time.monotonic() >= deadline:
             _write_start_failure(paths, "runner handshake timed out")
             return 125
@@ -628,25 +1079,79 @@ def _runner_main(meta_path: Path, ready_path: Path) -> int:
         return 125
 
     try:
-        child = subprocess.Popen(command, cwd=cwd, start_new_session=True)
-    except OSError as exc:
+        runner_process_group = os.getpgrp()
+        terminal_session = os.getsid(0)
+        original_foreground_group = _terminal_foreground_group()
+    except (OSError, TmuxAgentError) as exc:
+        _write_start_failure(paths, str(exc))
+        return 125
+
+    start_read_fd, start_write_fd = os.pipe()
+    status_read_fd, status_write_fd = os.pipe()
+    child: subprocess.Popen[bytes] | None = None
+    try:
+        shim = [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "_exec",
+            str(start_read_fd),
+            str(status_write_fd),
+            *command,
+        ]
+        child = subprocess.Popen(
+            shim,
+            cwd=cwd,
+            preexec_fn=os.setpgrp,
+            pass_fds=(start_read_fd, status_write_fd),
+        )
+        os.close(start_read_fd)
+        start_read_fd = -1
+        os.close(status_write_fd)
+        status_write_fd = -1
+        _set_terminal_foreground_group(child.pid)
+        os.write(start_write_fd, b"1")
+        os.close(start_write_fd)
+        start_write_fd = -1
+        readable, _, _ = select.select([status_read_fd], [], [], 5.0)
+        if not readable:
+            raise TmuxAgentError("agent exec handshake timed out")
+        exec_error = os.read(status_read_fd, 4096)
+        if exec_error:
+            raise TmuxAgentError(exec_error.decode("utf-8", errors="replace"))
+    except (OSError, TmuxAgentError) as exc:
+        if child is not None:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.wait()
         _write_start_failure(paths, f"agent launch failed: {exc}")
         return 127
-    metadata.update(
-        {
-            "state": "running",
-            "child_pid": child.pid,
-            "process_group": child.pid,
-            "child_started_at": utc_timestamp(),
-        }
-    )
-    atomic_write_json(meta_path, metadata)
-    termination: dict[str, float | int | None] = {"signal": None, "at": None}
+    finally:
+        if start_read_fd >= 0:
+            os.close(start_read_fd)
+        if start_write_fd >= 0:
+            os.close(start_write_fd)
+        if status_write_fd >= 0:
+            os.close(status_write_fd)
+        os.close(status_read_fd)
+
+    termination: dict[str, float | int | None] = {
+        "signal": None,
+        "at": None,
+        "grace": 2.0,
+    }
 
     def forward_termination(signum: int, _frame: Any) -> None:
         if termination["signal"] is None:
             termination["signal"] = signum
             termination["at"] = time.monotonic()
+            stop_request = paths.run_dir / "stop.request.json"
+            if stop_request.exists():
+                request = read_json(stop_request, kind="stop request")
+                requested_grace = request.get("grace")
+                if isinstance(requested_grace, (int, float)) and requested_grace >= 0:
+                    termination["grace"] = float(requested_grace)
             try:
                 os.killpg(child.pid, signal.SIGTERM)
             except ProcessLookupError:
@@ -655,10 +1160,37 @@ def _runner_main(meta_path: Path, ready_path: Path) -> int:
     for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
         signal.signal(signum, forward_termination)
 
+    stability_deadline = time.monotonic() + READY_STABILITY_INTERVAL
+    while (
+        child.poll() is None
+        and termination["signal"] is None
+        and time.monotonic() < stability_deadline
+    ):
+        time.sleep(0.005)
+    ready_to_publish = child.poll() is None and termination["signal"] is None
+
+    metadata.update(
+        {
+            "state": "running" if ready_to_publish else "finishing",
+            "runner_pid": os.getpid(),
+            "runner_process_group": runner_process_group,
+            "terminal_session": terminal_session,
+            "original_foreground_process_group": original_foreground_group,
+            "child_pid": child.pid,
+            "process_group": child.pid,
+            "foreground_process_group": child.pid,
+            "child_started_at": utc_timestamp(),
+        }
+    )
+    atomic_write_json(meta_path, metadata)
+    if ready_to_publish and child.poll() is None and termination["signal"] is None:
+        ready_path.touch(mode=0o600, exist_ok=False)
+
     while child.poll() is None:
         if (
             termination["at"] is not None
-            and time.monotonic() - float(termination["at"]) >= 2.0
+            and time.monotonic() - float(termination["at"])
+            >= float(termination["grace"])
             and _process_group_exists(child.pid)
         ):
             try:
@@ -672,19 +1204,28 @@ def _runner_main(meta_path: Path, ready_path: Path) -> int:
     # could eventually be reused, so later controllers must never signal it based
     # only on stale durable metadata.
     _terminate_process_group(child.pid, grace=2.0)
+    terminal_restore_error: str | None = None
+    try:
+        _set_terminal_foreground_group(runner_process_group)
+    except TmuxAgentError as exc:
+        terminal_restore_error = str(exc)
     stop_requested = (paths.run_dir / "stop.request.json").exists()
-    state = "stopped" if stop_requested else ("completed" if return_code == 0 else "failed")
-    atomic_write_json(
-        paths.result,
-        {
-            "schema": SCHEMA,
-            "state": state,
-            "finished_at": utc_timestamp(),
-            "exit_status": return_code,
-            "child_pid": child.pid,
-            "process_group": child.pid,
-        },
+    state = (
+        "failed"
+        if terminal_restore_error is not None
+        else ("stopped" if stop_requested else ("completed" if return_code == 0 else "failed"))
     )
+    result: dict[str, Any] = {
+        "schema": SCHEMA,
+        "state": state,
+        "finished_at": utc_timestamp(),
+        "exit_status": return_code,
+        "child_pid": child.pid,
+        "process_group": child.pid,
+    }
+    if terminal_restore_error is not None:
+        result["error"] = terminal_restore_error
+    publish_json_once(paths.result, result)
     return return_code if 0 <= return_code <= 255 else 1
 
 
@@ -715,6 +1256,19 @@ def _parser() -> argparse.ArgumentParser:
     _add_common_options(send)
     send.add_argument("--no-enter", action="store_true", help="do not press Enter after paste")
     send.add_argument("message")
+
+    attach = commands.add_parser("attach", help="attach from an ordinary terminal")
+    attach.add_argument("name")
+    _add_common_options(attach, include_json=False)
+
+    detach = commands.add_parser("detach", help="detach clients from one owned run")
+    detach.add_argument("name")
+    _add_common_options(detach)
+
+    peek = commands.add_parser("peek", help="capture recent tmux pane text")
+    peek.add_argument("name")
+    peek.add_argument("lines", nargs="?", type=int, default=50)
+    _add_common_options(peek)
 
     tail = commands.add_parser("tail", help="print the last lines of the durable log")
     tail.add_argument("name")
@@ -797,11 +1351,24 @@ def _public_main(argv: list[str]) -> int:
         else:
             print(f"{options.namespace}/{options.name} sent")
         return 0
-    if command_name in {"tail", "log"}:
+    if command_name == "attach":
+        return attach_run(name=options.name, **common)
+    if command_name == "detach":
+        detach_run(name=options.name, **common)
+        if options.json:
+            _emit_json({"name": options.name, "namespace": options.namespace, "detached": True})
+        else:
+            print(f"{options.namespace}/{options.name} detached")
+        return 0
+    if command_name in {"peek", "tail", "log"}:
         content = (
-            tail_log(name=options.name, lines=options.lines, **common)
-            if command_name == "tail"
-            else read_log(name=options.name, **common)
+            peek_run(name=options.name, lines=options.lines, **common)
+            if command_name == "peek"
+            else (
+                tail_log(name=options.name, lines=options.lines, **common)
+                if command_name == "tail"
+                else read_log(name=options.name, **common)
+            )
         )
         if options.json:
             _emit_json(
@@ -809,6 +1376,8 @@ def _public_main(argv: list[str]) -> int:
             )
         else:
             sys.stdout.write(content)
+            if command_name == "peek" and content and not content.endswith("\n"):
+                sys.stdout.write("\n")
         return 0
     if command_name == "list":
         values = list_runs(namespace=options.namespace, state_dir=options.state_dir)
@@ -850,9 +1419,22 @@ def _public_main(argv: list[str]) -> int:
 def main(arguments: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if arguments is None else arguments)
     if argv and argv[0] == "_run":
-        if len(argv) != 3:
+        if len(argv) != 4:
             raise TmuxAgentError("internal runner invocation is invalid")
-        return _runner_main(Path(argv[1]), Path(argv[2]))
+        return _runner_main(Path(argv[1]), Path(argv[2]), Path(argv[3]))
+    if argv and argv[0] == "_exec":
+        if len(argv) < 4:
+            raise TmuxAgentError("internal foreground exec invocation is invalid")
+        try:
+            start_fd = int(argv[1])
+            status_fd = int(argv[2])
+        except ValueError as exc:
+            raise TmuxAgentError("internal foreground exec fd is invalid") from exc
+        return _exec_after_foreground(start_fd, status_fd, argv[3:])
+    if argv and argv[0] == "_pane_exit":
+        if len(argv) != 5:
+            raise TmuxAgentError("internal pane-exit invocation is invalid")
+        return _pane_exit_main(Path(argv[1]), argv[2], argv[3], argv[4])
     return _public_main(argv)
 
 
@@ -900,6 +1482,10 @@ class RunPaths:
     def ready(self) -> Path:
         return self.run_dir / "runner.ready"
 
+    @property
+    def configured(self) -> Path:
+        return self.run_dir / "tmux.configured"
+
 
 def reserve_run(paths: RunPaths) -> None:
     """Atomically and permanently reserve one logical identity.
@@ -931,6 +1517,31 @@ def atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
             os.fsync(handle.fileno())
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def publish_json_once(path: Path, value: Mapping[str, Any]) -> bool:
+    """Atomically publish one immutable terminal record without overwriting a peer."""
+
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temporary)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, 0o600)
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            return False
+        return True
     finally:
         try:
             temp_path.unlink()

@@ -19,6 +19,8 @@ from typing import Optional
 from .capabilities import ProviderCapabilities, SessionFacts
 from .events import MessageEvent, ToolEvent, StopEvent
 from .policy import Decision
+from .session_identity import SessionConformance
+from .session_state import SessionStateError, ensure_session_record
 
 
 @dataclass
@@ -134,8 +136,9 @@ class ProviderAdapter(ABC):
         """Stable unique identifier for this running provider instance.
 
         Claude: from hook stdin payload (always available).
-        Codex:  wrapper-injected UUID, or pid-<N> PID-walk fallback.
-        Antigravity (agy): same as Codex fallback strategy (wrapper sets PLAYBOOK_SESSION_ID; PID-walk otherwise).
+        Codex: from hook payload / CODEX_THREAD_ID.
+        Antigravity (agy): from hook conversationId /
+        ANTIGRAVITY_CONVERSATION_ID.
 
         Must be stable for the entire session lifetime. Different concurrent
         instances of the same provider in the same project must return different IDs.
@@ -189,12 +192,28 @@ class ProviderAdapter(ABC):
 
     # ── 4. Lifecycle ─────────────────────────────────────────────────────────
 
+    def interactive_argv(
+        self,
+        *,
+        prompt: str,
+        model: Optional[str] = None,
+        resume_session_id: Optional[str] = None,
+    ) -> list[str]:
+        """Build provider-owned arguments for a new or exact-resumed TUI.
+
+        The executable/wrapper is selected by the tmux substrate. Adapters own
+        only their provider's argument grammar; callers must still validate
+        ``session_conformance()`` before launch.
+        """
+
+        raise NotImplementedError
+
     @abstractmethod
     def launch_interactive(self, project_root: Path, **kwargs) -> int:
         """Start the provider in interactive TUI mode (user at terminal).
 
         Equivalent to running `claude`, `codex`, `agy` in the project dir,
-        but with PLAYBOOK_SESSION_ID and PLAYBOOK_PROJECT_ROOT pre-set.
+        but with inherited provider identities scrubbed and project context set.
         Returns the process exit code.
         """
 
@@ -214,6 +233,15 @@ class ProviderAdapter(ABC):
         Called once at session start. Result should be cached by the caller.
         Never called mid-session — capabilities are fixed once detected.
         Never probes the provider network or spawns subprocesses with side effects.
+        """
+
+    @abstractmethod
+    def session_conformance(self) -> SessionConformance:
+        """Report whether this adapter's real interactive path preserves identity.
+
+        The result names the provider-native hook/context source, the exact
+        command transport, native resume behavior, and a concrete reason when
+        the locally required wrapper or bridge is absent.
         """
 
     # ── 6. Chat log ───────────────────────────────────────────────────────────
@@ -302,7 +330,7 @@ class ProviderAdapter(ABC):
 
     def _load_session_facts(self) -> SessionFacts:
         """Load SessionFacts from disk. Called fresh on each hook invocation."""
-        state_path = self.project_root / ".agent" / "sessions" / self.session_id / "current_state"
+        state_path = self._session_directory() / "current_state"
         task_number = None
         if state_path.exists():
             try:
@@ -310,20 +338,19 @@ class ProviderAdapter(ABC):
             except (ValueError, OSError):
                 pass
         task_path = None
+        authority_error = None
         if task_number is not None:
-            # Locate task.md: match NNN-name where int(NNN) == task_number.
-            # Uses int() comparison so "042-foo", "42-foo", "0042-foo" all match 42.
-            tasks_dir = self.project_root / ".agent" / "tasks"
-            if tasks_dir.exists():
-                for d in tasks_dir.iterdir():
-                    dash = d.name.find("-")
-                    if dash > 0:
-                        try:
-                            if int(d.name[:dash]) == task_number:
-                                task_path = d / "task.md"
-                                break
-                        except ValueError:
-                            pass
+            from provider.session_state import SessionKey
+            from tasks.core import resolve_agent_dir
+            from tasks.task_document import validate_task_claim, TaskDocumentError
+            key = SessionKey.from_values(self.binary_name(), self.session_id)
+            try:
+                task_path = validate_task_claim(
+                    resolve_agent_dir(self.project_root), key, str(task_number)
+                )
+            except TaskDocumentError as exc:
+                authority_error = str(exc)
+                task_number = None
         # Load persisted chat log offset for incremental reads
         chat_log_offset = self._load_chat_log_offset()
         return SessionFacts(
@@ -331,12 +358,13 @@ class ProviderAdapter(ABC):
             project_root=self.project_root,
             active_task_number=task_number,
             active_task_path=task_path,
+            authority_error=authority_error,
             chat_log_offset=chat_log_offset,
         )
 
     def _load_chat_log_offset(self) -> int:
-        """Read persisted byte offset from .agent/sessions/<session_id>/chat_log_offset."""
-        offset_path = self.project_root / ".agent" / "sessions" / self.session_id / "chat_log_offset"
+        """Read the provider-qualified session's persisted chat-log offset."""
+        offset_path = self._session_directory() / "chat_log_offset"
         if offset_path.exists():
             try:
                 return int(offset_path.read_text().strip())
@@ -350,9 +378,22 @@ class ProviderAdapter(ABC):
         Called by hook scripts after read_new_messages() returns the new offset.
         Without this, each hook call starts from 0 and re-processes all messages.
         """
-        offset_path = self.project_root / ".agent" / "sessions" / self.session_id / "chat_log_offset"
+        directory = self._session_directory()
+        offset_path = directory / "chat_log_offset"
         try:
-            offset_path.parent.mkdir(parents=True, exist_ok=True)
-            offset_path.write_text(str(offset))
-        except OSError:
+            from provider.session_state import session_state_lock
+            with session_state_lock(directory):
+                offset_path.write_text(str(offset))
+        except (OSError, SessionStateError):
             pass
+
+    def _session_directory(self) -> Path:
+        """Return this adapter's shared provider-qualified durable directory."""
+        from tasks.core import resolve_agent_dir
+
+        record, _ = ensure_session_record(
+            resolve_agent_dir(self.project_root),
+            self.binary_name(),
+            self.session_id,
+        )
+        return record.parent

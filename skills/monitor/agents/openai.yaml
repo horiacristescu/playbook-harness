@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fleet Monitor"
+  short_description: "Observe and steer managed Playbook sessions"
+  default_prompt: "Use $monitor to supervise the project's managed Playbook sessions."

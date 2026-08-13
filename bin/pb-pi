@@ -153,8 +153,10 @@ for m in "${ALLOWED_MODELS[@]}"; do
   MODELS_ARG="${MODELS_ARG:+$MODELS_ARG,}omlx/$m"
 done
 
-SESSION_ID="pid-$$"
-export PLAYBOOK_SESSION_ID="$SESSION_ID"
+# The extension obtains Pi's durable native ID from
+# ctx.sessionManager.getSessionId() before any hook/state mutation.
+unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
+  ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE
 export PLAYBOOK_PROVIDER="pi"
 export PLAYBOOK_HOOK_DIR="$HOOK_DIR"
 
@@ -169,7 +171,7 @@ if [ -n "$PROJECT_ROOT" ]; then
   export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
   PI_CONFIG_DIR="$AGENT_DIR/pi/config"
   PI_SESSION_DIR="$AGENT_DIR/pi/sessions"
-  mkdir -p "$PI_CONFIG_DIR" "$PI_SESSION_DIR" "$AGENT_DIR/sessions/$SESSION_ID"
+  mkdir -p "$PI_CONFIG_DIR" "$PI_SESSION_DIR"
   # Project init owns this copy so upgrades are reconciled safely. Preserve it
   # on launch; fall back to the shipped config only for an older/uninitialized
   # project. Pi ignores the Playbook ownership metadata at the JSON root.

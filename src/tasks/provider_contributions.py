@@ -30,7 +30,7 @@ from .reconcile import (
     parse_managed_file,
     validate_relative_target,
 )
-from .template import agents_md_template, claude_md
+from .template import agents_md_template, antigravity_md_template, claude_md
 from .core import resolve_agent_dir
 from .runtime import RUNTIME_COMPAT_SCHEMA, runtime_commit
 
@@ -220,21 +220,33 @@ def _managed_markdown_tree(
     if not source_root.is_dir():
         raise ReconcileError(f"installed provider asset directory is missing: {source_root}")
     intents = []
-    for source in sorted(source_root.rglob("*.md")):
+    for source in sorted(
+        path for path in source_root.rglob("*")
+        if path.is_file() and path.suffix in {".md", ".yaml", ".yml"}
+    ):
         body = source.read_text(encoding="utf-8")
         relative_source = source.relative_to(source_root).as_posix()
+        marker_style = (
+            "markdown-frontmatter" if source.suffix == ".md" else "hash"
+        )
         intents.append(
             ManagedFileIntent(
                 f"{destination}/{relative_source}",
                 body,
-                f"{source_root.name}/{relative_source}",
-                marker_style="markdown-frontmatter",
+                f"skills/{relative_source}",
+                marker_style=marker_style,
                 adopt_hashes=(_source_digest(body),),
             )
         )
     if not intents:
         raise ReconcileError(f"installed provider asset directory is empty: {source_root}")
     return tuple(intents)
+
+
+def _skill_intents(destination: str) -> tuple[ManagedFileIntent, ...]:
+    return _managed_markdown_tree(
+        _runtime_asset_root("skills", "skills"), destination
+    )
 
 
 def _claude_integration(root: Path, guidance: str) -> ProviderIntegration:
@@ -247,6 +259,12 @@ def _claude_integration(root: Path, guidance: str) -> ProviderIntegration:
                 entry,
                 nested_list_field="hooks",
                 nested_key_fields=("command",),
+                adopt_keys=(
+                    (("Edit|Write|Bash",),)
+                    if event == "PreToolUse"
+                    and entry.get("matcher") == "Edit|Write|MultiEdit|Bash"
+                    else ()
+                ),
             )
             for entry in entries
         )
@@ -266,9 +284,7 @@ def _claude_integration(root: Path, guidance: str) -> ProviderIntegration:
         ),
     ]
     intents.extend(
-        _managed_markdown_tree(
-            _runtime_asset_root("skills", ".claude/skills"), ".claude/skills"
-        )
+        _skill_intents(".claude/skills")
     )
     intents.extend(
         _managed_markdown_tree(
@@ -342,6 +358,7 @@ def _codex_integration(
                 SharedKeyedListIntent(
                     ".codex/hooks.json", tuple(hook_entries), hook=True
                 ),
+                *_skill_intents(".agents/skills"),
             ),
         ),
         capability,
@@ -381,6 +398,7 @@ def _pi_integration(root: Path, guidance: str) -> ProviderIntegration:
                     hook=True,
                     adopt_hashes=(_source_digest(body),),
                 ),
+                *_skill_intents(".pi/skills"),
             ),
         ),
         capability,
@@ -442,6 +460,7 @@ def _omp_integration(root: Path, guidance: str) -> ProviderIntegration:
                     marker_style="json",
                     hook=True,
                 ),
+                *_skill_intents(".agents/skills"),
             ),
         ),
         capability,
@@ -452,8 +471,8 @@ def _omp_integration(root: Path, guidance: str) -> ProviderIntegration:
 
 def _antigravity_integration(root: Path, guidance: str) -> ProviderIntegration:
     advisory = (
-        "<!-- playbook-harness: Antigravity 1.1.10 has no verified "
-        "project-local hook loader; this guidance is advisory. -->\n\n"
+        "<!-- playbook-harness: standalone init does not install or claim "
+        "Antigravity hooks; this provider-specific guidance is advisory. -->\n\n"
         + guidance
     )
     guidance_intents, proposal_required = _guidance_intents(
@@ -461,13 +480,14 @@ def _antigravity_integration(root: Path, guidance: str) -> ProviderIntegration:
     )
     capability, detail = _guidance_capability(
         IntegrationCapability.GUIDANCE_ONLY,
-        "Agy exposes only user-global plugin registration; init does not invoke it",
+        "init does not invoke Agy's user-global plugin registration; an existing "
+        "global plugin may still be active (inspect `agy plugin list`)",
         proposal_required,
     )
     return ProviderIntegration(
         "antigravity",
         Contribution(
-            "antigravity", guidance_intents
+            "antigravity", (*guidance_intents, *_skill_intents(".agents/skills"))
         ),
         capability,
         detail,
@@ -490,7 +510,7 @@ def build_provider_integrations(
     guidance = {
         "claude": ("CLAUDE.md", _standalone_guidance(claude_md(title))),
         "codex": ("AGENTS.md", _standalone_guidance(agents_md_template())),
-        "antigravity": ("GEMINI.md", _standalone_guidance(agents_md_template())),
+        "antigravity": ("GEMINI.md", _standalone_guidance(antigravity_md_template())),
         "pi": ("AGENTS.md", _standalone_guidance(agents_md_template())),
         "omp": ("AGENTS.md", _standalone_guidance(agents_md_template())),
     }

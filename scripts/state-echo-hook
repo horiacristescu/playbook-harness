@@ -7,13 +7,6 @@
 
 set -e
 
-# Skip when invoked from the monitor's own claude session (see launch-monitor).
-# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
-if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
-    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
-    exit 0
-fi
-
 # Tool-type-aware micro-reflection nudges — 5 classes, each naming a specific failure mode.
 # Call 1 on a new gate = silent. Call 2+ = class-specific nudge. Operate = always silent.
 NUDGES_ORIENT=(
@@ -99,11 +92,15 @@ fi
 
 # Read stdin (PostToolUse JSON)
 INPUT=$(cat)
-SESSION_ID="$(resolve_session_id)"
+PROVIDER="$(resolve_hook_provider)"
+if ! SESSION_ID="$(resolve_hook_session_id "$PROVIDER" "$INPUT")"; then
+    echo "[state-echo-hook] native session identity unavailable" >&2
+    echo '{}'
+    exit 0
+fi
 TOOL_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('tool_name',''))" 2>/dev/null || echo "")
 
-SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
-mkdir -p "$SESSION_DIR"
+SESSION_DIR="$(ensure_session_dir "$AGENT_DIR" "$PROVIDER" "$SESSION_ID")"
 STATE_FILE="$SESSION_DIR/current_state"
 COUNTER_FILE="$SESSION_DIR/counters"
 
@@ -112,7 +109,7 @@ if [ "$AGENT_WRITABLE" = true ]; then
     TOOLS_VAL=$(read_counter "$COUNTER_FILE" tools)
     write_counter "$COUNTER_FILE" tools $(( ${TOOLS_VAL:-0} + 1 ))
     case "$TOOL_NAME" in
-        Edit|Write|Bash)
+        Edit|Write|MultiEdit|Bash)
             WRITES_VAL=$(read_counter "$COUNTER_FILE" writes)
             write_counter "$COUNTER_FILE" writes $(( ${WRITES_VAL:-0} + 1 ))
             ;;
@@ -154,7 +151,7 @@ while IFS= read -r line; do
     LINENO_PART="${line%%:*}"
     CONTENT="${line#*:}"
     GATE_LINE="$LINENO_PART"
-    GATE_TEXT=$(echo "$CONTENT" | sed 's/^[[:space:]]*- \[ \] *//' | cut -c 1-200)
+    GATE_TEXT=$(echo "$CONTENT" | sed 's/^[[:space:]]*- \[ \] *//')
     break
 done < <(grep -nE '^[[:space:]]*- \[ \]' "$TASK_FILE" 2>/dev/null)
 
@@ -183,8 +180,8 @@ esac
 # Make path relative to project
 REL_PATH="${TASK_FILE#$PROJECT_DIR/}"
 
-# Repetition detection + gate transition logging (using consolidated counter file)
-GATE_LOG="$AGENT_DIR/chat_log.md"
+# Repetition detection and chronology. Ordinary structured file edits close
+# gates; this post-tool observer records the successful transition once.
 TRANSITION_MSG=""
 SKIP_MSG=""
 if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" = true ]; then
@@ -209,14 +206,12 @@ elif [ -n "$GATE_LINE" ]; then
         PREV_LINE="${PREV_KEY##*:}"
         TRANSITION_MSG="# ✓ previous gate done (${PREV_COUNT} tool calls)"
         if [ "$AGENT_WRITABLE" = true ]; then
-            {
-                echo "---"
-                echo ""
-                echo "**[G${PREV_TASK}:${PREV_LINE}]** [$(date -u '+%Y-%m-%d %H:%M:%S UTC')] \`HOST\` (${PREV_COUNT} tool calls)"
-                echo ""
-                echo "- [x] ${PREV_TEXT}"
-                echo ""
-            } >> "$GATE_LOG"
+            COMPLETED_LINE=$(sed -n "${PREV_LINE}p" "$TASK_FILE" 2>/dev/null)
+            COMPLETED_TEXT=$(echo "$COMPLETED_LINE" | sed 's/^[[:space:]]*- \[[xX]\] *//')
+            printf '%s\n' "- [x] ${COMPLETED_TEXT:-$PREV_TEXT}" | \
+                python3 "$HOOK_DIR/chat-log-write.py" event "$AGENT_DIR" \
+                "$PROVIDER" "$SESSION_ID" "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" \
+                "G${PREV_TASK}:${PREV_LINE}" 2>/dev/null || true
         fi
         # Gate-skip detection: new first-unchecked is above the just-completed gate
         if [ "$PREV_TASK" = "$TASK" ] && [ "$GATE_LINE" -lt "$PREV_LINE" ] 2>/dev/null; then
@@ -250,14 +245,12 @@ else
         PREV_TEXT=$(read_counter "$COUNTER_FILE" gate_text)
         PREV_TASK="${PREV_KEY%%:*}"
         PREV_LINE="${PREV_KEY##*:}"
-        {
-            echo "---"
-            echo ""
-            echo "**[G${PREV_TASK}:${PREV_LINE}]** [$(date -u '+%Y-%m-%d %H:%M:%S UTC')] \`HOST\` (${PREV_COUNT} tool calls)"
-            echo ""
-            echo "- [x] ${PREV_TEXT}"
-            echo ""
-        } >> "$GATE_LOG"
+        COMPLETED_LINE=$(sed -n "${PREV_LINE}p" "$TASK_FILE" 2>/dev/null)
+        COMPLETED_TEXT=$(echo "$COMPLETED_LINE" | sed 's/^[[:space:]]*- \[[xX]\] *//')
+        printf '%s\n' "- [x] ${COMPLETED_TEXT:-$PREV_TEXT}" | \
+            python3 "$HOOK_DIR/chat-log-write.py" event "$AGENT_DIR" \
+            "$PROVIDER" "$SESSION_ID" "$(date -u '+%Y-%m-%d %H:%M:%S UTC')" \
+            "G${PREV_TASK}:${PREV_LINE}" 2>/dev/null || true
         # Clear gate_* fields (task complete), keep tools/writes
         write_counter "$COUNTER_FILE" gate_key ""
         write_counter "$COUNTER_FILE" gate_count ""
@@ -304,6 +297,8 @@ if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" != true ] && [ "$NEW_COUNT" -gt 1 ]; 
         # operate: silent — no nudge
     esac
 fi
+
+CONTEXT=$(bound_gate_context "$CONTEXT")
 
 # Format as hook JSON
 JSON_CONTEXT=$(echo "$CONTEXT" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().rstrip()))" 2>/dev/null || echo "\"$CONTEXT\"")

@@ -8,15 +8,6 @@
 
 set -e
 
-# Skip when invoked from the monitor's own claude session — monitor runs in
-# the same project dir and would otherwise be blocked on the FRONT agent's
-# task gates. Launch-monitor exports PLAYBOOK_ROLE=monitor specifically.
-# Log to stderr so the skip is visible; only gate-enforcement skipped.
-if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
-    echo "[stop-hook] skip (PLAYBOOK_ROLE=monitor)" >&2
-    exit 0
-fi
-
 # Source shared lib (same directory)
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$HOOK_DIR/gate-echo-lib.sh"
@@ -32,14 +23,18 @@ AGENT_DIR=$(resolve_agent_dir "$PROJECT_DIR")
 # Read stdin (Stop JSON) — extract stop_hook_active
 INPUT=$(cat)
 STOP_ACTIVE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('stop_hook_active', False))" 2>/dev/null || echo "False")
-SESSION_ID="$(resolve_session_id)"
+PROVIDER="$(resolve_hook_provider)"
+if ! SESSION_ID="$(resolve_hook_session_id "$PROVIDER" "$INPUT")"; then
+    echo "BLOCKED: Playbook cannot establish the provider-native session identity." >&2
+    exit 2
+fi
 
 # Safety valve: if already blocked once, allow stopping to prevent loops
 if [ "$STOP_ACTIVE" = "True" ]; then
     exit 0
 fi
 
-SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
+SESSION_DIR="$(ensure_session_dir "$AGENT_DIR" "$PROVIDER" "$SESSION_ID")"
 STATE_FILE="$SESSION_DIR/current_state"
 
 # No active task — allow

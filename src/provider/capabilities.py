@@ -46,7 +46,8 @@ class ProviderCapabilities:
 
     session_id_in_payload: bool
     """Provider injects session_id into hook stdin JSON payload.
-    Claude: True. Codex: False (use SQLite + PID-walk). Antigravity: unknown."""
+    Claude/Codex use `session_id`; Antigravity uses `conversationId`; Pi/OMP
+    inject their native context ID through the shared bridge payload."""
 
     session_log_format: str
     """Format of on-disk session log: "jsonl" | "json" | "none" | "unknown".
@@ -73,7 +74,8 @@ class SessionFacts:
 
     session_id: str
     """Unique identifier for this provider session.
-    Claude: from hook stdin payload. Codex/Antigravity: wrapper UUID or pid-<N> fallback."""
+    Claude/Codex: provider-native hook/command identity. Other providers must
+    satisfy their declared native identity contract or remain unsupported."""
 
     project_root: Path
     """Absolute path to project root (contains .agent/tasks/).
@@ -84,6 +86,9 @@ class SessionFacts:
 
     active_task_path: Optional[Path] = None
     """Absolute path to active task.md, or None."""
+
+    authority_error: Optional[str] = None
+    """Cache/task ownership disagreement that must block governed mutation."""
 
     chat_log_offset: int = 0
     """Byte offset for next incremental read of the provider session log.

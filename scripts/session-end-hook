@@ -1,17 +1,8 @@
 #!/bin/bash
 # session-end-hook
-# SessionEnd hook — cleans up per-session state directory.
-#
-# Parses session_id from stdin JSON, removes .agent/sessions/<session_id>/.
+# SessionEnd hook — removes transient counters while preserving resumable state.
 
 set -e
-
-# Skip when invoked from the monitor's own claude session (see launch-monitor).
-# Log to stderr so the hook's firing is still visible; only gate-enforcement skipped.
-if [ "${PLAYBOOK_ROLE:-}" = "monitor" ]; then
-    echo "[$(basename "$0")] skip (PLAYBOOK_ROLE=monitor)" >&2
-    exit 0
-fi
 
 # Source shared lib (same directory)
 HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -30,12 +21,19 @@ if ! agent_dir_writable "$PROJECT_DIR"; then
     exit 0
 fi
 
-# Session ID: pid-$PPID (matches session-start-hook)
 INPUT=$(cat)
-SESSION_ID="${PLAYBOOK_SESSION_ID:-pid-$PPID}"
+PROVIDER="$(resolve_hook_provider)"
+if ! SESSION_ID="$(resolve_hook_session_id "$PROVIDER" "$INPUT")"; then
+    echo "[session-end-hook] native session identity unavailable; no cleanup performed" >&2
+    exit 0
+fi
 
-# Remove entire session directory (state + counters + offset)
-SESSION_DIR="$AGENT_DIR/sessions/$SESSION_ID"
-rm -rf "$SESSION_DIR"
+# Preserve current_state and chat offset: exact provider resume must recover the
+# same Playbook task. Only transient per-turn counters are safe to discard.
+if ! SESSION_DIR="$(ensure_session_dir "$AGENT_DIR" "$PROVIDER" "$SESSION_ID")"; then
+    echo "[session-end-hook] session path is not confined; no cleanup performed" >&2
+    exit 0
+fi
+rm -f "$SESSION_DIR/counters"
 
 exit 0

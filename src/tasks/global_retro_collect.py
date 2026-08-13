@@ -44,7 +44,6 @@ TOP_LEVEL_ALLOW = {
     "GEMINI.md",
 }
 AGENT_FILE_ALLOW = {"chat_log.md", "bash_history", "bash_log.md"}
-MONITOR_ALLOW = {"session.md", "rules.md", "MONITOR_MIND_MAP.md", "trace.md", "nudge.md"}
 HOOK_CONFIGS = (Path(".claude/settings.json"), Path(".codex/hooks.json"))
 
 HARD_EXCLUDED_NAMES = {".DS_Store", ".offset", ".pid", "sandbox.sb"}
@@ -308,11 +307,6 @@ def _select_project_files(project: Path, task_dirs: list[Path], max_file_bytes: 
         for path in sorted(playbooks.rglob("*.md")):
             consider(path.relative_to(project))
 
-    monitor = project / ".agent" / "monitor"
-    if monitor.exists():
-        for name in sorted(MONITOR_ALLOW):
-            consider(Path(".agent") / "monitor" / name)
-
     for task_dir in task_dirs:
         for path in sorted(task_dir.rglob("*")):
             if path.is_file():
@@ -340,7 +334,7 @@ def _is_allowed_file(project: Path, relpath: Path, max_file_bytes: int) -> tuple
     if relpath.suffix in HARD_EXCLUDED_SUFFIXES:
         return False, "hard-excluded suffix"
     posix = _posix(relpath)
-    if posix.startswith(".agent/sessions/") or posix.startswith(".agent/monitor/pids/"):
+    if posix.startswith(".agent/sessions/"):
         return False, "hard-excluded state directory"
     try:
         st = file_path.stat()

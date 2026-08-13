@@ -28,6 +28,12 @@ from ..adapter import ProviderAdapter, Invocation
 from ..capabilities import ProviderCapabilities, SessionFacts
 from ..events import MessageEvent, ToolEvent, StopEvent
 from ..policy import Decision
+from ..session_identity import (
+    SessionConformance,
+    declared_session_conformance,
+    hook_session_id,
+    scrub_inherited_session_identity,
+)
 
 
 class ClaudeAdapter(ProviderAdapter):
@@ -111,6 +117,7 @@ class ClaudeAdapter(ProviderAdapter):
         env.pop("CLAUDE_CODE_ENTRYPOINT", None)
         env.pop("CLAUDE_PROJECT_DIR", None)
         env["PLAYBOOK_SESSION_ID"] = self._session_id or "judge"
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         inv = self.headless_argv(prompt, model, context=system_context)
         # Judge-only extras layered on the core invocation.
         agent_args = inv.argv + [
@@ -155,11 +162,19 @@ class ClaudeAdapter(ProviderAdapter):
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
+    def interactive_argv(self, *, prompt: str, model: Optional[str] = None,
+                         resume_session_id: Optional[str] = None) -> list[str]:
+        argv: list[str] = []
+        if resume_session_id:
+            argv += ["--resume", resume_session_id]
+        if model:
+            argv += ["--model", model]
+        return [*argv, prompt]
+
     def launch_interactive(self, project_root: Path, **kwargs) -> int:
-        """Launch `claude` with PLAYBOOK_SESSION_ID pre-set."""
-        import uuid
-        env = os.environ.copy()
-        env["PLAYBOOK_SESSION_ID"] = self._session_id or str(uuid.uuid4())
+        """Launch `claude`; Claude creates and exposes the native session ID."""
+        env = scrub_inherited_session_identity(os.environ)
+        env["PLAYBOOK_PROVIDER"] = "claude"
         env["PLAYBOOK_PROJECT_ROOT"] = str(project_root)
         result = subprocess.run(["claude"], cwd=project_root, env=env, **kwargs)
         return result.returncode
@@ -169,6 +184,7 @@ class ClaudeAdapter(ProviderAdapter):
         import uuid
         env = os.environ.copy()
         env["PLAYBOOK_SESSION_ID"] = self._session_id or str(uuid.uuid4())
+        env["PLAYBOOK_ROLE"] = "noninteractive"
         env["PLAYBOOK_PROJECT_ROOT"] = str(project_root)
         result = subprocess.run(
             ["claude", "--print", prompt],
@@ -190,6 +206,14 @@ class ClaudeAdapter(ProviderAdapter):
             session_id_in_payload=True,
             session_log_format="jsonl",
             session_log_base=log_base if log_base and log_base.exists() else None,
+        )
+
+    def session_conformance(self) -> SessionConformance:
+        return declared_session_conformance(
+            "claude",
+            exact_resume=True,
+            resume_cwd="current project with claude --resume <native-id>",
+            supported=True,
         )
 
     # ── Chat log ─────────────────────────────────────────────────────────────
@@ -271,5 +295,5 @@ class ClaudeAdapter(ProviderAdapter):
             payload = json.load(sys.stdin)
             adapter = ClaudeAdapter.from_hook_stdin(payload, find_project_root())
         """
-        session_id = stdin_json.get("session_id", "default")
+        session_id = hook_session_id("claude", stdin_json, os.environ)
         return cls(session_id=session_id, project_root=project_root)

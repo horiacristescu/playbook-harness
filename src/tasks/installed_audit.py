@@ -13,10 +13,11 @@ ARTIFACT_MANIFEST = ".playbook-artifact.json"
 MANIFEST_SCHEMA = 1
 REQUIRED_PATHS = frozenset({
     "install.sh", "README.md", "bin/pb-tasks", "bin/pb-sandbox",
-    "bin/pb-codex", "bin/pb-agy", "bin/pb-pi", "bin/pb-tmux-agent", "bin/pb-arena",
+    "bin/pb-codex", "bin/pb-agy", "bin/pb-pi", "bin/pb-session",
+    "bin/pb-tmux-agent", "bin/pb-arena",
     "hooks/claude-standalone.json", "scripts/playbook-pi-hook-adapter.ts",
     "scripts/playbook-pi-omlx-models.json", "src/tasks/cli.py",
-    "src/tasks/installed_audit.py", "src/tmux_agent.py",
+    "src/tasks/installed_audit.py", "src/session_cli.py", "src/tmux_agent.py",
     "arena/src/playbook_arena/cli.py", "arena/cases/nub-markdown-format/case.json",
     "arena/cases/semlabel-dedup-hard/case.json",
 })
@@ -151,3 +152,30 @@ def audit_installed_tree(root: Path) -> list[str]:
     _audit_hook_edges(target, errors)
     _audit_python_edges(target, errors)
     return sorted(set(errors))
+
+
+def audit_serving_runtime(root: Path) -> list[str]:
+    """Audit the CLI-owning runtime without consulting the current project."""
+
+    target = root.resolve()
+    if (target / ARTIFACT_MANIFEST).is_file():
+        return audit_installed_tree(target)
+    required = (
+        "bin/session",
+        "src/session_cli.py",
+        "src/provider/session_identity.py",
+        "scripts/session-start-hook",
+        "scripts/task-gate-hook",
+        "scripts/chat-log-hook",
+        "scripts/state-echo-hook",
+        "scripts/stop-hook",
+        "scripts/session-end-hook",
+        "scripts/gate-echo-lib.sh",
+    )
+    if not (target / ".git").exists():
+        return ["serving runtime is neither an installed artifact nor a development checkout"]
+    return sorted(
+        f"serving runtime dependency missing: {relative}"
+        for relative in required
+        if not (target / relative).is_file()
+    )

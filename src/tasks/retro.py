@@ -8,6 +8,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tasks.chat_state import parse_chat_entries
+from tasks.task_document import TaskDocument, TaskDocumentError
+
 
 def extract_tasks(tasks_dir: Path, since: int = 0) -> list[dict]:
     """Extract structured data from task.md files.
@@ -51,7 +54,10 @@ def _parse_task(num: int, slug: str, content: str) -> dict:
     # Extract sections
     intent = _extract_section(lines, "Intent")
     why = _extract_section(lines, "Why")
-    status = _extract_status(lines)
+    try:
+        status = TaskDocument.parse(content).status
+    except TaskDocumentError:
+        status = "error"
     parked = _extract_section(lines, "Parked")
 
     # Gate analysis
@@ -124,17 +130,6 @@ def _extract_section(lines: list[str], heading: str) -> str:
     return "\n".join(section_lines).strip()
 
 
-def _extract_status(lines: list[str]) -> str:
-    """Extract status line (line after last ## Status)."""
-    status_idx = None
-    for i, line in enumerate(lines):
-        if line.strip() == "## Status":
-            status_idx = i
-    if status_idx is not None and status_idx + 1 < len(lines):
-        return lines[status_idx + 1].strip()
-    return "unknown"
-
-
 def _detect_type(content: str) -> str:
     """Detect task type from content heuristics."""
     if "<!-- stub:" in content:
@@ -164,40 +159,25 @@ def extract_chatlog(path: Path, task_windows: dict[int, tuple[str, str]] | None 
     if not path.exists():
         return []
 
-    content = path.read_text(encoding="utf-8")
     messages = []
-
-    # Pattern: **[M001]** [2026-02-14 10:14:45 UTC] `HOST`
-    msg_pattern = re.compile(
-        r'\*\*\[M(\d+)\]\*\*\s+\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\s+UTC)?)\]\s+`(\w+)`'
-    )
-
-    # Split on message headers
-    parts = msg_pattern.split(content)
-    # parts: [preamble, id1, ts1, speaker1, text1, id2, ts2, speaker2, text2, ...]
-    i = 1
-    while i + 3 < len(parts):
-        msg_id = int(parts[i])
-        timestamp = parts[i + 1].strip()
-        speaker = parts[i + 2]
-        text = parts[i + 3].strip()
-        # Trim text to first --- or next message
-        if "---" in text:
-            text = text[:text.index("---")].strip()
-
+    for entry in parse_chat_entries(path.read_text(encoding="utf-8")):
+        if not entry.marker.startswith("M"):
+            continue
         msg = {
-            "id": msg_id,
-            "timestamp": timestamp,
-            "speaker": speaker,
-            "text": text,
+            "id": int(entry.marker[1:]),
+            "timestamp": entry.timestamp,
+            "speaker": entry.speaker,
+            "text": entry.body,
+            "provider": entry.provider,
+            "session_id": entry.session_id,
+            "session_name": entry.session_name,
         }
 
         # Attribute to task window if available
         if task_windows:
-            msg["task"] = _attribute_to_task(timestamp, task_windows)
+            msg["task"] = _attribute_to_task(entry.timestamp, task_windows)
 
         messages.append(msg)
-        i += 4
 
     return messages
 
@@ -224,15 +204,21 @@ def build_task_windows(chatlog_path: Path, bash_history_path: Path | None = None
     """
     windows: dict[int, str] = {}  # task_num → activation timestamp
 
-    # Scan chat_log for gate entries: **[G083:42]** [timestamp]
+    # Typed task claims are the primary activation chronology. Historical gate
+    # rows remain a fallback for logs written before T events existed.
     if chatlog_path.exists():
-        content = chatlog_path.read_text(encoding="utf-8")
-        gate_pattern = re.compile(
-            r'\*\*\[G(\d+):\d+\]\*\*\s+\[(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\s+UTC)?)\]'
-        )
-        for m in gate_pattern.finditer(content):
-            task_num = int(m.group(1))
-            ts = m.group(2).strip()
+        for entry in parse_chat_entries(
+            chatlog_path.read_text(encoding="utf-8")
+        ):
+            task_match = re.fullmatch(
+                r"T(\d+):(claim|reopen|handoff|recover)", entry.marker
+            )
+            gate_match = re.fullmatch(r"G(\d+):\d+", entry.marker)
+            match = task_match or gate_match
+            if match is None:
+                continue
+            task_num = int(match.group(1))
+            ts = entry.timestamp
             if task_num not in windows or ts < windows[task_num]:
                 windows[task_num] = ts
 

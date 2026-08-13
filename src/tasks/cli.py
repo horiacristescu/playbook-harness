@@ -3,11 +3,26 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
-from tasks.core import create_task, list_tasks, task_status, PLAYBOOKS, _find_playbook_skill, resolve_session_id, resolve_agent_dir
+from tasks.core import create_task, list_tasks, task_status, PLAYBOOKS, _find_playbook_skill, resolve_session_id, resolve_session_key, resolve_agent_dir
+from provider.session_state import (
+    SessionStateError,
+    clear_navigation_cache,
+    ensure_session_record,
+    inspect_session_directories,
+    iter_session_directories,
+    session_state_lock,
+    write_navigation_cache,
+)
+from provider.session_identity import (
+    NativeSessionIdentityError,
+    resolve_command_session_id,
+)
 from tasks.provider_detection import (
     DetectionStatus,
     PROVIDER_SPECS,
@@ -29,8 +44,114 @@ from tasks.reconcile import (
     resolve_init_target,
     shared_scaffold_contribution,
 )
-from tasks.runtime import RUNTIME_COMPAT_SCHEMA, runtime_commit
-from tasks.installed_audit import audit_installed_tree
+from tasks.runtime import (
+    RUNTIME_COMPAT_SCHEMA,
+    runtime_commit,
+    runtime_generation_status,
+    runtime_identity,
+)
+from tasks.installed_audit import audit_serving_runtime
+from tasks.task_document import TaskDocument, TaskDocumentError, update_task_document
+from tasks.task_document import (
+    TaskClaimCASMismatch,
+    TaskClaimConflict,
+    claim_task_document,
+    complete_task_document,
+    replace_claimed_task_text,
+    replace_unclaimed_task_text,
+    validate_task_claim,
+)
+
+
+def _append_task_chronology(
+    agent_dir: Path,
+    key,
+    marker: str,
+    message: str,
+    *event_parts: object,
+) -> bool:
+    """Best-effort projection after task authority commits; never owns state."""
+    from tasks.chat_state import (
+        append_chat_event,
+        chat_timestamp,
+        derive_event_key,
+    )
+
+    try:
+        append_chat_event(
+            agent_dir,
+            marker,
+            key.provider,
+            key.session_id,
+            chat_timestamp(),
+            message,
+            event_key=derive_event_key(marker, key.provider, key.session_id, *event_parts),
+        )
+    except (OSError, ValueError) as exc:
+        print(
+            f"Warning: authoritative task state committed but chat chronology "
+            f"could not be appended: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+def _compact_chat_lines(
+    chat_log: Path,
+    *,
+    last_n: int | None = None,
+    width: int = 500,
+) -> list[str]:
+    """Render human messages as bounded one-line context, excluding task events."""
+    from tasks.chat_state import parse_chat_entries
+
+    lines = []
+    for entry in parse_chat_entries(chat_log.read_text(encoding="utf-8")):
+        if not entry.marker.startswith("M"):
+            continue
+        body = re.sub(r'<!--\s*/?T\d+\s*-->', '', entry.body)
+        body = " ".join(body.split())
+        if len(body) > width:
+            body = body[:width - 1] + "…"
+        identity = (
+            f"{entry.provider}/{entry.session_id}"
+            if entry.provider and entry.session_id else ""
+        )
+        tag = f" {entry.session_name}" if entry.session_name else ""
+        native = f" {identity}" if identity else ""
+        ts = entry.timestamp.removesuffix(" UTC")[:16]
+        lines.append(f"[{entry.marker}] {ts} {entry.speaker:<6}{tag}{native} {body}")
+    return lines[-last_n:] if last_n is not None else lines
+
+
+def _build_judge_context(
+    project_path: Path,
+    *,
+    task_file: Path | None,
+    task_path: str | None,
+    include_mind_map: bool = True,
+    max_chars: int = 100_000,
+) -> str:
+    """Build isolated review context: mind map plus an explicitly named task.
+
+    Interactive bootstrap guidance, recent task lineage, provider onboarding,
+    and general chat history are deliberately outside the judge boundary.
+    """
+    context_parts = []
+    if include_mind_map:
+        mm_content = _load_mind_map(project_path)
+        if mm_content:
+            context_parts.append(f"=== MIND_MAP.md ===\n{mm_content}")
+    if task_file is not None:
+        task_content = task_file.read_text(encoding="utf-8")
+        if len(task_content) > max_chars // 2:
+            task_content = task_content[:max_chars // 2] + "\n\n[... truncated ...]"
+        context_parts.append(f"=== {task_path} ===\n{task_content}")
+    context = "\n\n".join(context_parts)
+    if len(context) > max_chars:
+        context = context[:max_chars] + "\n\n[... truncated ...]"
+    return context
 
 
 _PROVIDER_ALIASES = {
@@ -42,6 +163,15 @@ _PROVIDER_ALIASES = {
     "pi": "pi",
     "omp": "omp",
 }
+
+
+def _session_key_argument(value: str):
+    """Parse the public ``provider:native-id`` owner spelling."""
+    from provider.session_state import SessionKey
+    if ":" not in value:
+        raise ValueError("owner must be provider:native-id")
+    provider, session_id = value.split(":", 1)
+    return SessionKey.from_values(provider, session_id)
 
 _HOOK_SCRIPTS = frozenset(
     {
@@ -72,7 +202,13 @@ def _run_hook_dispatch(args: list[str]) -> int:
     # Overwrite (rather than preserve) caller input so a launched agent cannot
     # redirect the permanent runtime guard to some other directory.
     os.environ["PLAYBOOK_RUNTIME_ROOT"] = str(Path(__file__).resolve().parents[2])
-    os.execv(str(script), [str(script)])
+    # Bash hooks ship executable. Two Python hook entrypoints intentionally
+    # retain ordinary 0644 file mode, so dispatch them through this runtime's
+    # interpreter instead of depending on checkout permission bits.
+    if os.access(script, os.X_OK):
+        os.execv(str(script), [str(script)])
+    else:
+        os.execv(sys.executable, [sys.executable, str(script)])
     raise AssertionError("os.execv returned")
 
 
@@ -140,6 +276,17 @@ def _run_init(args: list[str]) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    from tasks.legacy_migration import inspect_legacy_project
+
+    legacy = inspect_legacy_project(
+        target, include_hooks=include_hooks, home=Path.home()
+    )
+    if legacy.conflicts:
+        print("Incomplete migration; no project files were changed.", file=sys.stderr)
+        for conflict in legacy.conflicts:
+            print(f"Manual conflict: {conflict}", file=sys.stderr)
+        return 1
+
     selected_specs = tuple(
         spec for spec in PROVIDER_SPECS if provider is None or spec.name == provider
     )
@@ -147,6 +294,27 @@ def _run_init(args: list[str]) -> int:
 
     try:
         integrations = _provider_contributions(target, detections)
+        migrated_relatives = {
+            intent.relative for intent in legacy.contribution.intents
+        }
+        if migrated_relatives:
+            integrations = tuple(
+                ProviderIntegration(
+                    item.provider,
+                    Contribution(
+                        item.contribution.provider,
+                        tuple(
+                            intent
+                            for intent in item.contribution.intents
+                            if intent.relative not in migrated_relatives
+                        ),
+                    ),
+                    item.capability,
+                    item.detail,
+                    item.warnings,
+                )
+                for item in integrations
+            )
         provider_contributions = tuple(item.contribution for item in integrations)
         supported = {
             detection.name
@@ -167,7 +335,7 @@ def _run_init(args: list[str]) -> int:
             contributed.add(provider_contribution.provider)
         plan = plan_reconciliation(
             target,
-            (shared_contribution, *provider_contributions),
+            (shared_contribution, legacy.contribution, *provider_contributions),
             include_hooks=include_hooks,
         )
     except ReconcileError as exc:
@@ -190,6 +358,9 @@ def _run_init(args: list[str]) -> int:
 
     for operation in plan.operations:
         print(f"  {operation.relative:<34} {operation.state.value}")
+    for relative in legacy.migrated:
+        action = "retired" if "monitor" in relative else "migrated"
+        print(f"  {relative:<34} {action}")
     integration_by_name = {item.provider: item for item in integrations}
     for detection in detections:
         if detection.status == DetectionStatus.SUPPORTED:
@@ -233,11 +404,79 @@ def _run_init(args: list[str]) -> int:
 
 
 def _state_file(project_path: Path) -> Path:
-    """Return per-session state file under .agent/sessions/<id>/current_state."""
-    session_id = resolve_session_id()
-    state_dir = resolve_agent_dir(project_path) / "sessions" / session_id
-    state_dir.mkdir(parents=True, exist_ok=True)
-    return state_dir / "current_state"
+    """Return the current provider-qualified session navigation cache."""
+    agent_dir = resolve_agent_dir(project_path)
+    key = resolve_session_key()
+    record, _ = ensure_session_record(agent_dir, key.provider, key.session_id)
+    return record.parent / "current_state"
+
+
+def _session_surface(agent_dir: Path, key) -> str:
+    """Describe session→task state without making the cache authoritative."""
+    from tasks.task_document import validate_task_claim, TaskDocumentError
+    record, _ = ensure_session_record(agent_dir, key.provider, key.session_id)
+    state = record.parent / "current_state"
+    handle = f"{key.provider}:{key.session_id}"
+    if not state.exists():
+        return f"Session: {handle} | task: unclaimed"
+    try:
+        number = state.read_text(encoding="utf-8").strip()
+        task_file = validate_task_claim(agent_dir, key, number)
+    except (OSError, TaskDocumentError) as exc:
+        return f"Session: {handle} | task: AUTHORITY MISMATCH — {exc}"
+    return f"Session: {handle} | task: {number} ({task_file.parent.name})"
+
+
+def _session_store_surface(agent_dir: Path) -> str:
+    """Report recognized records and inert legacy/malformed directories."""
+    sessions = agent_dir / "sessions"
+    if not sessions.exists():
+        return "Session store: 0 recognized | 0 inert legacy/malformed"
+    recognized = list(iter_session_directories(agent_dir))
+    recognized_paths = {path for _, path in recognized}
+    inert = sum(
+        1 for path in sessions.iterdir()
+        if path.is_dir() and not path.is_symlink() and path not in recognized_paths
+    )
+    return (
+        f"Session store: {len(recognized)} recognized provider-native record(s)"
+        f" | {inert} inert legacy/malformed director{'y' if inert == 1 else 'ies'}"
+    )
+
+
+def _playbook_skill_catalog() -> tuple[tuple[str, str], ...]:
+    """Return the installed canonical skill names and trigger descriptions."""
+    skill_root = Path(__file__).resolve().parents[2] / "skills"
+    catalog = []
+    if not skill_root.is_dir():
+        return ()
+    for skill_file in sorted(skill_root.glob("*/SKILL.md")):
+        text = skill_file.read_text(encoding="utf-8", errors="replace")
+        if not text.startswith("---\n"):
+            continue
+        closing = text.find("\n---\n", 4)
+        if closing < 0:
+            continue
+        frontmatter = text[4:closing].splitlines()
+        name = ""
+        description_parts: list[str] = []
+        collecting = False
+        for line in frontmatter:
+            if line.startswith("name:"):
+                name = line.partition(":")[2].strip()
+                collecting = False
+            elif line.startswith("description:"):
+                value = line.partition(":")[2].strip()
+                collecting = value in {">", "|"}
+                if value and not collecting:
+                    description_parts.append(value.strip('"\''))
+            elif collecting and line.startswith("  "):
+                description_parts.append(line.strip())
+            elif collecting:
+                collecting = False
+        if name:
+            catalog.append((name, " ".join(description_parts)))
+    return tuple(catalog)
 
 
 def _capture_recent_chat(project_path: Path, max_messages: int = 10,
@@ -252,30 +491,23 @@ def _capture_recent_chat(project_path: Path, max_messages: int = 10,
     Returns list of message blocks (most recent last), each as:
     "**[MNNN]** [timestamp]\\n<text truncated to 200 chars>"
     """
-    import re
     from datetime import datetime
+    from tasks.chat_state import parse_chat_entries
 
     chat_log = resolve_agent_dir(project_path) / "chat_log.md"
     if not chat_log.exists():
         return []
 
-    content = chat_log.read_text(encoding="utf-8")
-    # Split into message blocks on --- separator
-    msg_pattern = re.compile(
-        r'\*\*\[(M\d+)\]\*\*\s+\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\]\s+`\w+`\s*\n\s*\n(.*?)(?=\n---|\Z)',
-        re.DOTALL
-    )
-
     messages = []
-    for m in msg_pattern.finditer(content):
-        msg_id = m.group(1)
-        timestamp_str = m.group(2)
-        text = m.group(3).strip()
+    for entry in parse_chat_entries(chat_log.read_text(encoding="utf-8")):
+        if not entry.marker.startswith("M"):
+            continue
+        timestamp_str = entry.timestamp.removesuffix(" UTC")
         try:
             ts = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        messages.append((msg_id, ts, timestamp_str, text))
+        messages.append((entry.marker, ts, timestamp_str, entry.body))
 
     if not messages:
         return []
@@ -308,18 +540,16 @@ def _capture_recent_chat(project_path: Path, max_messages: int = 10,
     return captured
 
 
-def _inject_chat_into_task(task_file: Path, messages: list[str]) -> None:
-    """Inject captured chat messages into task.md References section."""
+def _render_chat_into_task(content: str, messages: list[str]) -> str:
+    """Return task text with the managed recent-chat block refreshed."""
     if not messages:
-        return
+        return content
 
     import re
 
     def _utf8_safe(text: str) -> str:
         """Replace non-UTF-8-survivable code points like lone surrogates."""
         return text.encode("utf-8", errors="replace").decode("utf-8")
-
-    content = task_file.read_text(encoding="utf-8")
 
     start_marker = "<!-- playbook-recent-chat:start -->"
     end_marker = "<!-- playbook-recent-chat:end -->"
@@ -351,7 +581,15 @@ def _inject_chat_into_task(task_file: Path, messages: list[str]) -> None:
             flags=re.DOTALL,
         )
         content = references.rstrip() + "\n" + chat_block + content[separator:]
-        task_file.write_text(_utf8_safe(content), encoding="utf-8")
+    return _utf8_safe(content)
+
+
+def _inject_chat_into_task(task_file: Path, messages: list[str]) -> None:
+    """Compatibility helper for unclaimed/task-creation paths and unit tests."""
+    original = task_file.read_text(encoding="utf-8")
+    updated = _render_chat_into_task(original, messages)
+    if updated != original:
+        task_file.write_text(updated, encoding="utf-8")
 
 
 def _load_mind_map(project_path: Path, max_chars: int = 25000) -> str | None:
@@ -427,19 +665,14 @@ def find_project_root() -> Path:
     return cwd
 
 
-def _gc_dead_sessions(project_path: Path) -> None:
-    """Remove stale session dirs and legacy flat files.
+def _cleanup_legacy_flat_session_files(project_path: Path) -> None:
+    """Remove only pre-session-layout flat state from the agent root.
 
-    Called at every tasks invocation. Cheap: O(N sessions × 1 stat).
-
-    Session dirs older than 24h (by current_state mtime) are removed.
-    Legacy flat files (.hook_counters.*, current_state*) in .agent/ root
-    are always removed — they're pre-migration artifacts.
+    Provider-native sessions are resumable conversations. Process liveness and
+    file age cannot prove that their state is dead, so ordinary CLI entry never
+    garbage-collects a directory under ``sessions/``.
     """
     agent_dir = resolve_agent_dir(project_path)
-    sessions_dir = agent_dir / "sessions"
-
-    # Clean legacy flat files from pre-migration layout
     for pattern in (".hook_counters.*", "current_state", "current_state.*"):
         for f in agent_dir.glob(pattern):
             if f.is_file():
@@ -447,37 +680,6 @@ def _gc_dead_sessions(project_path: Path) -> None:
                     f.unlink()
                 except OSError:
                     pass
-
-    # Clean stale session dirs
-    if not sessions_dir.exists():
-        return
-    cutoff = time.time() - 86400
-    own_session = os.environ.get("PLAYBOOK_SESSION_ID", "")
-    for session_dir in sessions_dir.iterdir():
-        if not session_dir.is_dir():
-            continue
-        # Never remove our own session
-        if own_session and session_dir.name == own_session:
-            continue
-        name = session_dir.name
-        # PID-based sessions: instant GC via kill -0 liveness check
-        if name.startswith("pid-"):
-            try:
-                pid = int(name[4:])
-                os.kill(pid, 0)  # raises OSError if process is dead
-                continue  # still alive — keep
-            except (ValueError, OSError):
-                pass  # dead or invalid — remove
-        else:
-            # Non-PID sessions (legacy UUIDs, "default"): 24h mtime fallback
-            state_file = session_dir / "current_state"
-            try:
-                if state_file.exists() and state_file.stat().st_mtime >= cutoff:
-                    continue  # fresh — keep
-            except OSError:
-                pass
-        shutil.rmtree(session_dir, ignore_errors=True)
-
 
 def _panel_triage_frame() -> list[str]:
     """Return the lines to append to a panel-review judge.md so the reading
@@ -528,7 +730,11 @@ def _cmd_prepare_merge(project_path: Path, target: str, dry_run: bool) -> None:
     _prepare_merge_tasks(project_path, agent_dir, target, merge_base, dry_run)
 
     # --- Step 2: Chat log re-sequencing (placeholder) ---
-    _prepare_merge_chatlog(project_path, agent_dir, target, merge_base, dry_run)
+    try:
+        _prepare_merge_chatlog(project_path, agent_dir, target, merge_base, dry_run)
+    except (OSError, RuntimeError, SessionStateError, TaskDocumentError) as exc:
+        print(f"Error: prepare-merge chat transaction refused: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     # --- Step 3: MIND_MAP collision report (placeholder) ---
     _prepare_merge_mindmap(project_path, target, merge_base)
@@ -602,137 +808,223 @@ def _prepare_merge_tasks(project_path: Path, agent_dir: Path, target: str,
             print(f"  [dry-run] rename {old_name} → {new_name}")
         return
 
-    # Abort before any mutation if a live session holds a task being renumbered
-    sessions_dir = agent_dir / "sessions"
-    if sessions_dir.exists():
-        for session_dir in sessions_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            state_file = session_dir / "current_state"
-            if not state_file.exists():
-                continue
-            try:
-                task_num = int(state_file.read_text(encoding="utf-8").strip())
-            except ValueError:
-                continue
-            if task_num in rename_map and _session_is_live(session_dir):
-                print(
-                    f"Error: session {session_dir.name} is live and holds task T{task_num}. "
-                    "Stop that session before running prepare-merge.",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
-
-    _rename_colliding_tasks(project_path, agent_dir, current_tasks, rename_map)
-    _rewrite_task_refs(project_path, agent_dir, rename_map)
+    try:
+        _renumber_tasks_transactionally(agent_dir, current_tasks, rename_map)
+    except (OSError, RuntimeError, SessionStateError, TaskDocumentError) as exc:
+        print(f"Error: prepare-merge task transaction refused: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
-def _rename_colliding_tasks(project_path: Path, agent_dir: Path,
-                             current_tasks: dict[int, str], rename_map: dict[int, int]) -> None:
-    import subprocess
+def _rewrite_task_references(text: str, rename_map: dict[int, int]) -> str:
     import re
-    tasks_dir = agent_dir / "tasks"
-
-    for old_num in sorted(rename_map):
+    # Descending order prevents a smaller old number from cascading inside a
+    # newly written larger number.
+    for old_num in sorted(rename_map, reverse=True):
         new_num = rename_map[old_num]
-        old_name = current_tasks[old_num]
-        # Preserve slug: "133-prepare-merge" → "135-prepare-merge"
-        new_name = str(new_num) + old_name[len(str(old_num)):]
-        old_rel = str((tasks_dir / old_name).relative_to(project_path))
-        new_rel = str((tasks_dir / new_name).relative_to(project_path))
-
-        result = subprocess.run(
-            ["git", "-C", str(project_path), "mv", old_rel, new_rel],
-            capture_output=True,
+        text = re.sub(rf"\bT{old_num}\b", f"T{new_num}", text)
+        text = re.sub(
+            rf"\btask {old_num}\b", f"task {new_num}", text,
+            flags=re.IGNORECASE,
         )
-        if result.returncode != 0:
-            # Fallback for untracked dirs
-            (tasks_dir / old_name).rename(tasks_dir / new_name)
-
-        # Rewrite H1 title: "# 133 - ..." → "# 135 - ..."
-        task_md = tasks_dir / new_name / "task.md"
-        if task_md.exists():
-            text = task_md.read_text(encoding="utf-8")
-            text = re.sub(
-                rf"^# {old_num}(?=[\s\-]|$)",
-                f"# {new_num}",
-                text,
-                count=1,
-                flags=re.MULTILINE,
-            )
-            task_md.write_text(text, encoding="utf-8")
-
-    # Clear chat_log_offset for all sessions — stale after renames + upcoming ref rewrite
-    sessions_dir = agent_dir / "sessions"
-    if sessions_dir.exists():
-        for session_dir in sessions_dir.iterdir():
-            if session_dir.is_dir():
-                offset_file = session_dir / "chat_log_offset"
-                if offset_file.exists():
-                    offset_file.unlink()
+        text = re.sub(rf"\b{old_num}(?=-[a-z])", str(new_num), text)
+        text = re.sub(rf"\bG{old_num}:(\d+)\b", rf"G{new_num}:\1", text)
+    return text
 
 
-def _session_is_live(session_dir: Path) -> bool:
-    """Return True if the session's process is still running."""
-    name = session_dir.name
-    if name.startswith("pid-"):
+def _prepare_merge_atomic_write(path: Path, content: bytes) -> None:
+    """Publish one prepare-merge file without exposing a partial write."""
+    import tempfile
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
         try:
-            pid = int(name[4:])
-            os.kill(pid, 0)
-            return True
-        except (ValueError, OSError):
-            return False
-    return False
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
-def _rewrite_task_refs(project_path: Path, agent_dir: Path, rename_map: dict[int, int]) -> None:
+def _prepare_merge_snapshot_bytes(path: Path) -> bytes | None:
+    """Read a merge-owned auxiliary file, distinguishing absence from empty."""
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+def _prepare_merge_require_snapshot(
+    path: Path, expected: bytes | None, surface: str
+) -> None:
+    """Refuse rather than overwrite a writer that did not honor our lock."""
+    if _prepare_merge_snapshot_bytes(path) != expected:
+        raise TaskDocumentError(
+            f"prepare-merge refused: concurrent {surface} change at {path}"
+        )
+
+
+def _renumber_tasks_transactionally(
+    agent_dir: Path,
+    current_tasks: dict[int, str],
+    rename_map: dict[int, int],
+) -> None:
+    """Renumber unclaimed tasks and all reverse pointers as one rollback unit."""
+    from contextlib import ExitStack
     import re
+    from tasks.task_document import task_authority_lock
 
-    def _apply(text: str) -> str:
-        # Process in descending order of old number to avoid cascading (T13 inside T133)
-        for old_num in sorted(rename_map, reverse=True):
-            new_num = rename_map[old_num]
-            text = re.sub(rf"\bT{old_num}\b", f"T{new_num}", text)
-            text = re.sub(rf"\btask {old_num}\b", f"task {new_num}", text, flags=re.IGNORECASE)
-            text = re.sub(rf"\b{old_num}(?=-[a-z])", str(new_num), text)
-            text = re.sub(rf"\bG{old_num}:(\d+)\b", rf"G{new_num}:\1", text)
-        return text
-
-    # Rewrite all task.md files (including non-colliding tasks that reference old numbers)
     tasks_dir = agent_dir / "tasks"
-    if tasks_dir.exists():
-        for task_dir in tasks_dir.iterdir():
-            if task_dir.is_dir():
-                task_md = task_dir / "task.md"
-                if task_md.exists():
-                    original = task_md.read_text(encoding="utf-8")
-                    updated = _apply(original)
-                    if updated != original:
-                        task_md.write_text(updated, encoding="utf-8")
+    task_files = sorted(
+        path for path in tasks_dir.glob("*/task.md") if path.is_file()
+    )
+    renamed: list[tuple[Path, Path]] = []
+    with ExitStack() as locks:
+        # Lock every task whose references may change, not merely the colliding
+        # directory. This shares the exact lock used by claim/handoff edits.
+        for task_file in task_files:
+            locks.enter_context(task_authority_lock(task_file))
 
-    # Rewrite chat_log.md
-    chat_log = agent_dir / "chat_log.md"
-    if chat_log.exists():
-        original = chat_log.read_text(encoding="utf-8")
-        updated = _apply(original)
-        if updated != original:
-            chat_log.write_text(updated, encoding="utf-8")
+        original_task_bytes = {path: path.read_bytes() for path in task_files}
+        original_task_text = {
+            path: content.decode("utf-8")
+            for path, content in original_task_bytes.items()
+        }
+        recognized_sessions = list(iter_session_directories(agent_dir))
+        # Hold every auxiliary-state authority through snapshot, publication,
+        # and rollback. Cache/offset writers share the per-session record lock;
+        # all shipped chat appenders share the project chat lock.
+        for _, session_dir in recognized_sessions:
+            locks.enter_context(session_state_lock(session_dir))
+        from tasks.chat_state import chat_log_lock
+        locks.enter_context(chat_log_lock(agent_dir))
+        cache_bytes: dict[Path, bytes] = {}
+        offset_bytes: dict[Path, bytes] = {}
+        for _, session_dir in recognized_sessions:
+            state = session_dir / "current_state"
+            if state.exists():
+                cache_bytes[state] = state.read_bytes()
+            offset = session_dir / "chat_log_offset"
+            if offset.exists():
+                offset_bytes[offset] = offset.read_bytes()
+        chat_log = agent_dir / "chat_log.md"
+        chat_bytes = chat_log.read_bytes() if chat_log.exists() else None
 
-    # Rewrite current_state in dead sessions; live sessions were already rejected upstream
-    sessions_dir = agent_dir / "sessions"
-    if sessions_dir.exists():
-        for session_dir in sessions_dir.iterdir():
-            if not session_dir.is_dir():
-                continue
-            state_file = session_dir / "current_state"
-            if not state_file.exists():
-                continue
+        for old_num in sorted(rename_map):
+            task_file = tasks_dir / current_tasks[old_num] / "task.md"
+            document = TaskDocument.parse(original_task_text[task_file])
+            owner = document.live_owner
+            if owner is not None:
+                raise TaskDocumentError(
+                    f"claimed task {task_file} is owned by "
+                    f"{owner.provider}:{owner.session_id}"
+                )
+
+        updated_tasks: dict[Path, bytes] = {}
+        destinations: dict[Path, Path] = {}
+        directory_moves: list[tuple[Path, Path]] = []
+        for old_num in sorted(rename_map):
+            old_dir = tasks_dir / current_tasks[old_num]
+            new_num = rename_map[old_num]
+            new_name = str(new_num) + old_dir.name[len(str(old_num)):]
+            new_dir = tasks_dir / new_name
+            if new_dir.exists():
+                raise TaskDocumentError(f"renumber destination already exists: {new_dir}")
+            directory_moves.append((old_dir, new_dir))
+
+        for path, text in original_task_text.items():
+            destination = path
+            for old_dir, new_dir in directory_moves:
+                if path.parent == old_dir:
+                    destination = new_dir / path.name
+                    old_num = int(old_dir.name.partition("-")[0])
+                    text = re.sub(
+                        rf"^# {old_num}(?=[\s\-]|$)",
+                        f"# {rename_map[old_num]}", text, count=1,
+                        flags=re.MULTILINE,
+                    )
+                    break
+            destinations[path] = destination
+            updated_tasks[destination] = _rewrite_task_references(
+                text, rename_map
+            ).encode("utf-8")
+
+        updated_caches: dict[Path, bytes] = {}
+        for state, content in cache_bytes.items():
             try:
-                task_num = int(state_file.read_text(encoding="utf-8").strip())
-            except ValueError:
+                task_num = int(content.decode("utf-8").strip())
+            except (UnicodeDecodeError, ValueError):
                 continue
             if task_num in rename_map:
-                state_file.write_text(str(rename_map[task_num]) + "\n", encoding="utf-8")
+                updated_caches[state] = f"{rename_map[task_num]}\n".encode()
+
+        updated_chat = None
+        if chat_bytes is not None:
+            updated_chat = _rewrite_task_references(
+                chat_bytes.decode("utf-8"), rename_map
+            ).encode("utf-8")
+
+        published_aux: dict[Path, tuple[bytes | None, bytes]] = {}
+        deleted_offsets: dict[Path, bytes] = {}
+        try:
+            for old_dir, new_dir in directory_moves:
+                old_dir.rename(new_dir)
+                renamed.append((old_dir, new_dir))
+            for destination, content in updated_tasks.items():
+                current = content
+                if destination.read_bytes() != current:
+                    _prepare_merge_atomic_write(destination, current)
+            if updated_chat is not None and updated_chat != chat_bytes:
+                _prepare_merge_require_snapshot(chat_log, chat_bytes, "chat-log")
+                published_aux[chat_log] = (chat_bytes, updated_chat)
+                _prepare_merge_atomic_write(chat_log, updated_chat)
+            for state, content in updated_caches.items():
+                if _prepare_merge_snapshot_bytes(state) != content:
+                    _prepare_merge_require_snapshot(
+                        state, cache_bytes[state], "session-cache"
+                    )
+                    published_aux[state] = (cache_bytes[state], content)
+                    _prepare_merge_atomic_write(state, content)
+            for offset, content in offset_bytes.items():
+                _prepare_merge_require_snapshot(offset, content, "chat-log-offset")
+                offset.unlink()
+                deleted_offsets[offset] = content
+        except BaseException as original_error:
+            # Restore content while renamed directories still exist, then put
+            # directory names back. Auxiliary rollback is itself a CAS: an
+            # uncooperative writer is preserved and reported, never erased.
+            for original, content in original_task_bytes.items():
+                current_path = destinations.get(original, original)
+                if current_path.exists():
+                    _prepare_merge_atomic_write(current_path, content)
+            rollback_conflicts: list[Path] = []
+            for path, (before, published) in published_aux.items():
+                current = _prepare_merge_snapshot_bytes(path)
+                if current == published:
+                    if before is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        _prepare_merge_atomic_write(path, before)
+                elif current != before:
+                    rollback_conflicts.append(path)
+            for path, content in deleted_offsets.items():
+                current = _prepare_merge_snapshot_bytes(path)
+                if current is None:
+                    _prepare_merge_atomic_write(path, content)
+                elif current != content:
+                    rollback_conflicts.append(path)
+            for old_dir, new_dir in reversed(renamed):
+                if new_dir.exists():
+                    new_dir.rename(old_dir)
+            if rollback_conflicts:
+                paths = ", ".join(str(path) for path in rollback_conflicts)
+                raise TaskDocumentError(
+                    "prepare-merge rollback preserved concurrent changes at " + paths
+                ) from original_error
+            raise
 
 
 def _prepare_merge_chatlog(project_path: Path, agent_dir: Path, target: str,
@@ -759,46 +1051,77 @@ def _prepare_merge_chatlog(project_path: Path, agent_dir: Path, target: str,
     base_last = _last_mid(_git_show_text(merge_base, chat_log_rel))
     target_last = _last_mid(_git_show_text(target, chat_log_rel))
 
-    chat_log = agent_dir / "chat_log.md"
-    if not chat_log.exists():
-        print("Chat log: not found — skipping.")
-        return
+    from tasks.chat_state import chat_log_lock
+    with chat_log_lock(agent_dir):
+        chat_log = agent_dir / "chat_log.md"
+        if not chat_log.exists():
+            print("Chat log: not found — skipping.")
+            return
 
-    current_text = chat_log.read_text(encoding="utf-8")
-    new_mids = [int(m) for m in re.findall(r"\*\*\[M(\d+)\]\*\*", current_text) if int(m) > base_last]
+        chat_before = chat_log.read_bytes()
+        current_text = chat_before.decode("utf-8")
+        new_mids = [int(m) for m in re.findall(r"\*\*\[M(\d+)\]\*\*", current_text) if int(m) > base_last]
 
-    if not new_mids:
-        print("Chat log: no new entries beyond merge base — already clean.")
-        return
+        if not new_mids:
+            print("Chat log: no new entries beyond merge base — already clean.")
+            return
 
-    # Idempotency: if new entries already start beyond target's last MID, we're done
-    if min(new_mids) > target_last:
-        print("Chat log: new entries already positioned beyond target's last MID — already clean.")
-        return
+        # Idempotency: if new entries already start beyond target's last MID, we're done
+        if min(new_mids) > target_last:
+            print("Chat log: new entries already positioned beyond target's last MID — already clean.")
+            return
 
-    offset = target_last - base_last
-    if offset <= 0:
-        print("Chat log: target has not advanced beyond merge base — no re-sequencing needed.")
-        return
+        offset = target_last - base_last
+        if offset <= 0:
+            print("Chat log: target has not advanced beyond merge base — no re-sequencing needed.")
+            return
 
-    def _reseq(m: "re.Match[str]") -> str:
-        mid = int(m.group(1))
-        if mid > base_last:
-            width = max(len(m.group(1)), len(str(mid + offset)))
-            return f"**[M{mid + offset:0{width}d}]**"
-        return m.group(0)
+        def _reseq(m: "re.Match[str]") -> str:
+            mid = int(m.group(1))
+            if mid > base_last:
+                width = max(len(m.group(1)), len(str(mid + offset)))
+                return f"**[M{mid + offset:0{width}d}]**"
+            return m.group(0)
 
-    updated = re.sub(r"\*\*\[M(\d+)\]\*\*", _reseq, current_text)
-    new_highest = max(new_mids) + offset
+        updated = re.sub(r"\*\*\[M(\d+)\]\*\*", _reseq, current_text)
+        new_highest = max(new_mids) + offset
 
-    print(f"Chat log: re-sequencing {len(new_mids)} new entr{'y' if len(new_mids)==1 else 'ies'} "
-          f"(offset +{offset}, new highest M{new_highest}).")
+        print(f"Chat log: re-sequencing {len(new_mids)} new entr{'y' if len(new_mids)==1 else 'ies'} "
+              f"(offset +{offset}, new highest M{new_highest}).")
 
-    if dry_run:
-        return
+        if dry_run:
+            return
 
-    chat_log.write_text(updated, encoding="utf-8")
-    (agent_dir / "chat_log_counter").write_text(str(new_highest) + "\n", encoding="utf-8")
+        counter = agent_dir / "chat_log_counter"
+        counter_before = _prepare_merge_snapshot_bytes(counter)
+        chat_after = updated.encode("utf-8")
+        counter_after = f"{new_highest}\n".encode("utf-8")
+        published: dict[Path, tuple[bytes | None, bytes]] = {}
+        try:
+            _prepare_merge_require_snapshot(chat_log, chat_before, "chat-log")
+            published[chat_log] = (chat_before, chat_after)
+            _prepare_merge_atomic_write(chat_log, chat_after)
+            _prepare_merge_require_snapshot(counter, counter_before, "chat-counter")
+            published[counter] = (counter_before, counter_after)
+            _prepare_merge_atomic_write(counter, counter_after)
+        except BaseException as original_error:
+            conflicts: list[Path] = []
+            for path, (before, intended) in published.items():
+                current = _prepare_merge_snapshot_bytes(path)
+                if current == intended:
+                    if before is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        _prepare_merge_atomic_write(path, before)
+                elif current != before:
+                    conflicts.append(path)
+            if conflicts:
+                paths = ", ".join(str(path) for path in conflicts)
+                raise TaskDocumentError(
+                    "prepare-merge chat rollback preserved concurrent changes at "
+                    + paths
+                ) from original_error
+            raise
 
 
 def _prepare_merge_mindmap(project_path: Path, target: str, merge_base: str) -> None:
@@ -880,11 +1203,10 @@ def _gate_bounce(task_id: str, task_file, action: str) -> bool:
     if head == "(all gates checked)":
         return False
     try:
-        open_count = sum(
-            1 for ln in task_file.read_text(encoding="utf-8").splitlines()
-            if ln.strip().startswith("- [ ]")
-        )
-    except OSError:
+        from tasks.task_document import TaskDocument
+        document = TaskDocument.parse(task_file.read_text(encoding="utf-8"))
+        open_count = sum(not gate.checked for gate in document.gates)
+    except (OSError, TaskDocumentError):
         open_count = 0
     print(
         f"Blocked: task {task_id} has {open_count} open gate(s) — {action} needs them finalized.",
@@ -915,10 +1237,10 @@ def main():
     cmd_args = args[1:]
 
     # Init deliberately targets cwd/an explicit directory rather than adopting
-    # an initialized parent.  Even session GC would violate that local-only
+    # an initialized parent. Even legacy flat-state cleanup would violate that local-only
     # contract, so ordinary upward-discovery maintenance starts after init.
     if cmd not in ("init", "hook", "runtime-info", "runtime-audit"):
-        _gc_dead_sessions(find_project_root())
+        _cleanup_legacy_flat_session_files(find_project_root())
 
     if cmd == "hook":
         sys.exit(_run_hook_dispatch(cmd_args))
@@ -928,11 +1250,11 @@ def main():
             print("Error: runtime-info accepts no arguments", file=sys.stderr)
             sys.exit(2)
         try:
-            commit = runtime_commit()
+            identity = runtime_identity()
         except RuntimeError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
-        print(json.dumps({"runtime_schema": RUNTIME_COMPAT_SCHEMA, "commit": commit}))
+        print(json.dumps(identity, sort_keys=True))
         return
 
     if cmd == "runtime-audit":
@@ -940,7 +1262,7 @@ def main():
             print("Error: runtime-audit accepts no arguments", file=sys.stderr)
             sys.exit(2)
         runtime_root = Path(__file__).resolve().parents[2]
-        errors = audit_installed_tree(runtime_root)
+        errors = audit_serving_runtime(runtime_root)
         if errors:
             print("Installed runtime audit failed:", file=sys.stderr)
             for error in errors:
@@ -959,86 +1281,132 @@ def main():
         if task_num != "done" and task_num.isdigit():
             task_num = task_num.zfill(3)
         force = any(a in ("--force", "-f") for a in cmd_args[1:])
+        transfer_flags = [
+            flag for flag in ("--handoff-from", "--recover-from")
+            if flag in cmd_args[1:]
+        ]
+        if len(transfer_flags) > 1:
+            print("Error: choose either --handoff-from or --recover-from", file=sys.stderr)
+            sys.exit(2)
+        expected_owner = None
+        transfer_kind = None
+        if transfer_flags:
+            transfer_kind = transfer_flags[0][2:-5]
+            position = cmd_args.index(transfer_flags[0])
+            if position + 1 >= len(cmd_args):
+                print(f"Error: {transfer_flags[0]} requires provider:native-id", file=sys.stderr)
+                sys.exit(2)
+            try:
+                expected_owner = _session_key_argument(cmd_args[position + 1])
+            except (KeyError, ValueError) as exc:
+                print(f"Error: invalid expected owner: {exc}", file=sys.stderr)
+                sys.exit(2)
         project_path = find_project_root()
 
         # Handle 'tasks work done' - deactivate current task and set Status in task.md
         if task_num == "done":
             agent_dir = resolve_agent_dir(project_path)
-            session_id = resolve_session_id()
-            session_state = agent_dir / "sessions" / session_id / "current_state"
+            session_state = _state_file(project_path)
+            current_key = resolve_session_key()
 
             # Find the active task from session state file
             prev_task = session_state.read_text(encoding="utf-8").strip() if session_state.exists() else None
 
             if prev_task:
-                # Set ## Status to done in task.md
-                tasks_dir = agent_dir / "tasks"
-                matches = list(tasks_dir.glob(f"{prev_task}-*/task.md"))
-                if matches:
-                    task_file = matches[0]
-                    if not force and _gate_bounce(prev_task, task_file, "closing this task"):
+                # Resolve the cache through the same unique task.md authority
+                # used by governed edits before inspecting or mutating gates.
+                try:
+                    task_file = validate_task_claim(
+                        agent_dir, current_key, prev_task
+                    )
+                except (OSError, TaskDocumentError) as exc:
+                    print(
+                        f"Error: cannot close cached task {prev_task}: {exc}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                if not force and _gate_bounce(prev_task, task_file, "closing this task"):
+                    sys.exit(1)
+                # Codex Stop compares the dirty-code tree with a prompt-start
+                # baseline.  Commit the authorized state before removing this
+                # session's active-task pointer, otherwise a task completed in
+                # one turn is falsely reported as unowned work at turn end.
+                if current_key.provider == "codex":
+                    from provider.codex_hooks import checkpoint_turn_baselines
+
+                    try:
+                        checkpoint_turn_baselines(
+                            project_path, current_key.session_id
+                        )
+                    except OSError as exc:
+                        print(
+                            f"Error: cannot checkpoint Codex Stop state before "
+                            f"closing task {prev_task}: {exc}",
+                            file=sys.stderr,
+                        )
                         sys.exit(1)
-                    lines = task_file.read_text(encoding="utf-8").splitlines(keepends=True)
-                    for i, line in enumerate(lines):
-                        if line.strip() == "## Status" and i + 1 < len(lines):
-                            lines[i + 1] = "done\n"
-                            task_file.write_text("".join(lines), encoding="utf-8")
-                            break
-                # Remove session dirs that reference this task.
-                # PLAYBOOK_SESSION_ID is not set when called from Bash tool, so scan all sessions.
-                # Intentional partial delete: only sessions pointing at prev_task are removed;
-                # sessions for other tasks are left intact.
-                sessions_dir = agent_dir / "sessions"  # agent_dir already resolved above
-                if sessions_dir.exists():
-                    for sf in sessions_dir.glob("*/current_state"):
-                        try:
-                            if sf.read_text(encoding="utf-8").strip() == prev_task:
-                                shutil.rmtree(sf.parent, ignore_errors=True)
-                        except OSError:
-                            pass
+                try:
+                    completed = complete_task_document(task_file, current_key)
+                except (OSError, TaskDocumentError) as exc:
+                    print(f"Error: cannot close {task_file}: {exc}", file=sys.stderr)
+                    sys.exit(1)
+                _append_task_chronology(
+                    agent_dir,
+                    current_key,
+                    f"T{prev_task}:release",
+                    f"completed task {prev_task}",
+                    len(completed.sessions),
+                    "forced" if force else "gates-complete",
+                    task_file.stat().st_mtime_ns,
+                )
+                # The native session record is a durable resume handle. Only
+                # clear this session's rebuildable navigation cache; ownership
+                # release becomes task-authoritative in the claim gate.
+                try:
+                    clear_navigation_cache(
+                        agent_dir, current_key, expected_task=prev_task
+                    )
+                except (OSError, SessionStateError) as exc:
+                    print(
+                        f"Error: task {prev_task} is done but cache cleanup failed; "
+                        f"rerun this command: {exc}", file=sys.stderr,
+                    )
+                    sys.exit(1)
                 print(f"Task {prev_task} done.")
             else:
                 print("No active task.")
             print("Code edits blocked until: pb-tasks work <N>")
             return
 
-        # Verify task exists
-        from tasks.core import _find_active_task
-        task_file = _find_active_task(project_path, task_num)
-        if not task_file:
-            tasks_dir = resolve_agent_dir(project_path) / "tasks"
-            matches = list(tasks_dir.glob(f"{task_num}-*/task.md"))
-            if matches:
-                from tasks.core import _is_done
-                tf = matches[0]
-                done = _is_done(tf)
-                if done:
-                    # Reopen: reset Status to in_progress so activation can proceed.
-                    lines = tf.read_text(encoding="utf-8").splitlines(keepends=True)
-                    for i, line in enumerate(lines):
-                        if line.strip() == "## Status" and i + 1 < len(lines):
-                            lines[i + 1] = "in_progress\n"
-                            tf.write_text("".join(lines), encoding="utf-8")
-                            break
-                    print(f"Note: task {task_num} was marked done — reopening.")
-                    task_file = tf
-                    # Fall through to activation below
-                elif "<!-- stub:" in tf.read_text(encoding="utf-8"):
-                    # Stub — allow activation, expansion happens below
-                    task_file = tf
-                else:
-                    print(f"Task {task_num} has no open gates.", file=sys.stderr)
-                    sys.exit(1)
-            else:
-                print(f"Task {task_num} not found", file=sys.stderr)
-                sys.exit(1)
+        # Resolve one exact task document before any activation effect. This
+        # refuses duplicate numbers and malformed managed sections rather than
+        # routing around them through a first glob/head-position guess.
+        from tasks.task_document import resolve_task_document
+        try:
+            task_file = resolve_task_document(
+                resolve_agent_dir(project_path), task_num
+            )
+            candidate_text = task_file.read_text(encoding="utf-8")
+            candidate_document = TaskDocument.parse(candidate_text)
+        except (OSError, TaskDocumentError) as exc:
+            print(f"Error: cannot resolve task {task_num}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if candidate_document.status == "done":
+            # Reopen only after all activation checks and stub expansion.
+            print(f"Note: task {task_num} was marked done — reopening.")
+        elif "<!-- stub:" not in candidate_text and candidate_document.head_position == "(all gates checked)":
+            print(f"Task {task_num} has no open gates.", file=sys.stderr)
+            sys.exit(1)
 
         # Auto-close previous task if all gates are checked
         agent_dir = resolve_agent_dir(project_path)
         agent_dir.mkdir(parents=True, exist_ok=True)
-        session_id = resolve_session_id()
-        session_dir = agent_dir / "sessions" / session_id
-        session_state = session_dir / "current_state"
+        try:
+            TaskDocument.parse(task_file.read_text(encoding="utf-8"))
+        except (OSError, TaskDocumentError) as exc:
+            print(f"Error: cannot activate {task_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        session_state = _state_file(project_path)
         prev_task = None
         if session_state.exists():
             prev_task = session_state.read_text(encoding="utf-8").strip()
@@ -1050,33 +1418,37 @@ def main():
                 prev_status = _extract_status(prev_file)
                 prev_head = _extract_head_position(prev_file)
                 if prev_head == "(all gates checked)":
-                    if not prev_status.startswith("done"):
+                    if prev_status != "done":
                         # Auto-close: set status to done
-                        prev_lines = prev_file.read_text(encoding="utf-8").splitlines(keepends=True)
-                        for i, line in enumerate(prev_lines):
-                            if line.strip() == "## Status" and i + 1 < len(prev_lines):
-                                prev_lines[i + 1] = "done\n"
-                                prev_file.write_text("".join(prev_lines), encoding="utf-8")
-                                break
+                        try:
+                            auto_key = resolve_session_key()
+                            completed = complete_task_document(prev_file, auto_key)
+                        except (OSError, TaskDocumentError) as exc:
+                            print(f"Error: cannot auto-close {prev_file}: {exc}", file=sys.stderr)
+                            sys.exit(1)
+                        _append_task_chronology(
+                            agent_dir,
+                            auto_key,
+                            f"T{prev_task}:release",
+                            f"auto-completed task {prev_task}",
+                            len(completed.sessions),
+                            "auto",
+                            prev_file.stat().st_mtime_ns,
+                        )
                         print(f"Auto-closed task {prev_task} (all gates checked).")
-                elif not prev_status.startswith("done") and not force:
+                elif prev_status != "done" and not force:
                     # prev task still has open gates — don't silently abandon it.
                     _gate_bounce(prev_task, prev_file, f"switching to task {task_num}")
                     sys.exit(1)
-                elif not prev_status.startswith("done"):
+                elif prev_status != "done":
                     print(f"--force: switching away from task {prev_task} with open gates (left in_progress).")
-
-        # Write task number to per-session current_state
-        session_dir.mkdir(parents=True, exist_ok=True)
-        session_state.write_text(f"{task_num}\n", encoding="utf-8")
-
-        # Stale session GC handled by _gc_dead_sessions() at CLI entry point
 
         # Expand stubs on activation
         task_content = task_file.read_text(encoding="utf-8")
         import re as _stub_re
         stub_match = _stub_re.search(r'<!-- stub:(\w+) -->', task_content)
         if stub_match:
+            stub_original = task_content
             stub_type = stub_match.group(1)
             # Extract user's Intent and Why sections before expanding
             def _extract_section(content, heading):
@@ -1126,10 +1498,78 @@ def main():
                     flags=_stub_re.DOTALL,
                 )
 
-            task_file.write_text(full_content, encoding="utf-8")
+            try:
+                replace_unclaimed_task_text(task_file, stub_original, full_content)
+            except (OSError, TaskDocumentError) as exc:
+                print(f"Error: cannot expand stub {task_file}: {exc}", file=sys.stderr)
+                sys.exit(1)
             # Re-read for chat injection and display
             task_content = full_content
             print(f"Expanded stub to full {stub_type} template.")
+
+        # The task document records successful claims; current_state is only
+        # this session's navigation cache. The following gate makes the pair a
+        # locked transaction and adds ownership refusal.
+        try:
+            claimed, claim_changed = claim_task_document(
+                task_file,
+                resolve_session_key(),
+                expected_owner=expected_owner,
+            )
+        except TaskClaimConflict as exc:
+            print(
+                f"Error: task {task_num} is owned by "
+                f"{exc.owner.provider}:{exc.owner.session_id}. "
+                "Use --handoff-from or --recover-from with that exact owner; "
+                "--force never steals a claim.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        except (OSError, TaskDocumentError) as exc:
+            print(f"Error: cannot activate {task_file}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if expected_owner is not None and claim_changed:
+            print(
+                f"Recorded explicit {transfer_kind} from "
+                f"{expected_owner.provider}:{expected_owner.session_id}."
+            )
+        current_key = resolve_session_key()
+        if claim_changed:
+            if expected_owner is not None:
+                action = transfer_kind or "handoff"
+                message = (
+                    f"{action} task {task_num} from "
+                    f"{expected_owner.provider}:{expected_owner.session_id}"
+                )
+            elif candidate_document.status == "done":
+                action = "reopen"
+                message = f"reopened task {task_num}"
+            else:
+                action = "claim"
+                message = f"claimed task {task_num}"
+            _append_task_chronology(
+                agent_dir,
+                current_key,
+                f"T{task_num}:{action}",
+                message,
+                len(claimed.sessions),
+                expected_owner.provider if expected_owner else "-",
+                expected_owner.session_id if expected_owner else "-",
+                task_file.stat().st_mtime_ns,
+            )
+        try:
+            write_navigation_cache(agent_dir, current_key, task_num)
+            if expected_owner is not None and expected_owner != current_key:
+                clear_navigation_cache(
+                    agent_dir, expected_owner, expected_task=task_num
+                )
+        except (OSError, SessionStateError) as exc:
+            print(
+                f"Error: task {task_num} authority committed but navigation cache "
+                f"reconciliation failed; rerun the same command: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
         # Workflow rules — deferred from bootstrap to task activation
         from tasks.template import workflow_briefing
@@ -1140,7 +1580,19 @@ def main():
         # Capture recent chat messages into task.md
         recent_chat = _capture_recent_chat(project_path)
         if recent_chat:
-            _inject_chat_into_task(task_file, recent_chat)
+            original = task_file.read_text(encoding="utf-8")
+            updated = _render_chat_into_task(original, recent_chat)
+            if updated != original:
+                try:
+                    replace_claimed_task_text(
+                        task_file, current_key, original, updated
+                    )
+                except (OSError, TaskDocumentError) as exc:
+                    print(
+                        f"Error: cannot attach recent chat to {task_file}: {exc}",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
             print(f"Captured {len(recent_chat)} recent chat message(s) into References.")
 
         # Print the full task file
@@ -1205,9 +1657,9 @@ def main():
             print(f"Stub ({pattern_name}) — expand with: pb-tasks work {task_num}")
         elif task_type != "quick":
             print(f"Pattern: {pattern_name}")
-            print(f"Next: fill in task.md gates, then ask user to run: pb-tasks work {task_num}")
+            print(f"Next: fill in task.md gates, then run: pb-tasks work {task_num}")
         else:
-            print(f"Next: fill in task.md gates, then ask user to run: pb-tasks work {task_num}")
+            print(f"Next: fill in task.md gates, then run: pb-tasks work {task_num}")
         print()
 
         if task_type != "quick":
@@ -1238,9 +1690,86 @@ def main():
     elif cmd == "bootstrap":
         project_path = find_project_root()
 
+        # A bare provider launch reaches bootstrap with its native identity even
+        # when no wrapper ran. Validate/create the same durable skeleton hooks
+        # use, and enrich only descriptive restart context.
+        try:
+            key = resolve_session_key()
+        except NativeSessionIdentityError as exc:
+            identity_markers = (
+                "PLAYBOOK_PROVIDER",
+                "PLAYBOOK_BRIDGE_PROVIDER",
+                "CLAUDE_CODE_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "ANTIGRAVITY_CONVERSATION_ID",
+            )
+            if any(os.environ.get(name) for name in identity_markers):
+                print(f"Error: cannot bootstrap Playbook session: {exc}", file=sys.stderr)
+                sys.exit(1)
+            key = None
+        if key is not None:
+            agent_dir = resolve_agent_dir(project_path)
+            _record_path, session_record = ensure_session_record(
+                agent_dir,
+                key.provider,
+                key.session_id,
+                enrich={
+                    "project": str(project_path.resolve()),
+                    "resume_cwd": str(Path.cwd().resolve()),
+                },
+            )
+            if session_record.get("managed") is not True:
+                from datetime import datetime, timezone
+                from tasks.chat_state import (
+                    append_chat_event,
+                    derive_event_key,
+                )
+                try:
+                    created = datetime.fromisoformat(
+                        session_record["created_at"].replace("Z", "+00:00")
+                    ).astimezone(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S UTC"
+                    )
+                    append_chat_event(
+                        agent_dir,
+                        "S:discover",
+                        key.provider,
+                        key.session_id,
+                        created,
+                        "discovered ad-hoc provider session during bootstrap",
+                        event_key=derive_event_key(
+                            "S:discover", key.provider, key.session_id
+                        ),
+                    )
+                except (OSError, ValueError) as exc:
+                    print(
+                        "Warning: session bootstrap succeeded but chat chronology "
+                        f"could not be appended: {exc}",
+                        file=sys.stderr,
+                    )
+        else:
+            agent_dir = resolve_agent_dir(project_path)
+
         # Identity preamble
         from tasks.template import identity_preamble, mind_map_header
         print(identity_preamble())
+        try:
+            runtime_surface, _runtime_matches = runtime_generation_status(project_path)
+            print(runtime_surface)
+        except RuntimeError as exc:
+            print(f"Playbook runtime: UNSAFE — {exc}")
+        if key is not None:
+            print(_session_surface(agent_dir, key))
+            print(
+                "Native identity authority: the Session line above names this process; "
+                "task.md ## Sessions entries are ownership history, not your current identity."
+            )
+        else:
+            print("Session: unavailable (read-only bootstrap; no native identity)")
+        try:
+            print(_session_store_surface(agent_dir))
+        except (OSError, SessionStateError) as exc:
+            print(f"Session store: UNSAFE — {exc}")
         print()
 
         # Mind Map — full dump with navigation header
@@ -1252,9 +1781,43 @@ def main():
             print(mm_content.rstrip())
             print()
 
+        skills = _playbook_skill_catalog()
+        if skills:
+            print("=== PLAYBOOK SKILLS ===")
+            print(
+                "Provider integrations install the full skill; compatible agents load it "
+                "when its trigger matches."
+            )
+            for name, description in skills:
+                summary = description if len(description) <= 180 else description[:177] + "..."
+                print(f"  {name:<16} {summary}")
+            print()
+
         # Pending tasks
         print("=== PENDING TASKS ===")
         list_tasks(project_path, pending_only=True)
+
+        # A bounded lineage window supports the onboarding requirement to
+        # inspect recent work before creating a task without dumping history.
+        print()
+        print("=== RECENT TASKS (LATEST 3) ===")
+        list_tasks(project_path, recent_only=True)
+
+        print()
+        print("=== RECENT HUMAN MESSAGES (LATEST 50; CONTEXT ONLY) ===")
+        chat_log = agent_dir / "chat_log.md"
+        if chat_log.is_file():
+            recent_messages = _compact_chat_lines(chat_log, last_n=50, width=300)
+            if recent_messages:
+                print("\n".join(recent_messages))
+            else:
+                print("(no human messages recorded)")
+        else:
+            print("(no chat_log.md yet)")
+        print(
+            "Context is orientation, not authorization. Expand with: "
+            "pb-tasks log <N> [--width <W>]; task-specific: pb-tasks context <N>"
+        )
 
         # CLI reference — shown last so mind map + tasks aren't buried
         from tasks.template import cli_reference
@@ -1265,10 +1828,17 @@ def main():
     elif cmd in ("list", "ls"):
         project_path = find_project_root()
         pending_only = "--pending" in cmd_args
-        list_tasks(project_path, pending_only=pending_only)
+        recent_only = "--recent" in cmd_args
+        if pending_only and recent_only:
+            print("Error: choose either --pending or --recent", file=sys.stderr)
+            sys.exit(1)
+        list_tasks(
+            project_path,
+            pending_only=pending_only,
+            recent_only=recent_only,
+        )
 
     elif cmd == "panel-review":
-        import subprocess
         from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeout
 
         # Parse flags
@@ -1337,31 +1907,16 @@ def main():
 
         from tasks.template import panel_plan_review_prompt, panel_impl_review_prompt
 
-        # Build context
+        # Build isolated judge context. Taskless panels get project memory plus
+        # the explicit prompt, never an ambient raw chat tail.
         MAX_CONTEXT_CHARS = 100_000
-        context_parts = []
-        if not bare:
-            if not no_mind_map:
-                mm_content = _load_mind_map(project_path)
-                if mm_content:
-                    context_parts.append(f"=== MIND_MAP.md ===\n{mm_content}")
-            if task_file:
-                task_content = task_file.read_text(encoding="utf-8")
-                if len(task_content) > MAX_CONTEXT_CHARS // 2:
-                    task_content = task_content[:MAX_CONTEXT_CHARS // 2] + "\n\n[... truncated ...]"
-                context_parts.append(f"=== {task_path} ===\n{task_content}")
-            else:
-                # Taskless: include recent chat log as project context
-                chat_log = resolve_agent_dir(project_path) / "chat_log.md"
-                if chat_log.exists():
-                    chat_content = chat_log.read_text(encoding="utf-8")
-                    max_chat = MAX_CONTEXT_CHARS // 2
-                    if len(chat_content) > max_chat:
-                        chat_content = "[... truncated ...]\n\n" + chat_content[-max_chat:]
-                    context_parts.append(f"=== .agent/chat_log.md (recent) ===\n{chat_content}")
-        system_context = "\n\n".join(context_parts)
-        if len(system_context) > MAX_CONTEXT_CHARS:
-            system_context = system_context[:MAX_CONTEXT_CHARS] + "\n\n[... truncated ...]"
+        system_context = "" if bare else _build_judge_context(
+            project_path,
+            task_file=task_file,
+            task_path=task_path,
+            include_mind_map=not no_mind_map,
+            max_chars=MAX_CONTEXT_CHARS,
+        )
 
         # Prompt strategy: bare/taskless → extra_prompt is full mission; with task → review prompt + optional steering
         if task_file:
@@ -1520,8 +2075,6 @@ def main():
             print(f"Usage: tasks {review_cmd} <number> [--backend codex|claude|agy|pi] [--model <variant>] [--prompt \"...\"]  (default backend: models.json default_judge, ships codex)", file=sys.stderr)
             sys.exit(1)
 
-        import subprocess
-
         # Parse flags
         backend = None   # explicit --backend; else from models.json default_judge
         model = None     # explicit --model (variant within the backend)
@@ -1584,19 +2137,14 @@ def main():
 
         from tasks.template import plan_review_prompt, impl_review_prompt
 
-        # Build context: mind map + task content (bounded to avoid argv/context limits)
+        # Build isolated context: mind map + selected task only.
         MAX_CONTEXT_CHARS = 100_000
-        context_parts = []
-        mm_content = _load_mind_map(project_path)
-        if mm_content:
-            context_parts.append(f"=== MIND_MAP.md ===\n{mm_content}")
-        task_content = task_file.read_text(encoding="utf-8")
-        if len(task_content) > MAX_CONTEXT_CHARS // 2:
-            task_content = task_content[:MAX_CONTEXT_CHARS // 2] + "\n\n[... truncated for context budget ...]"
-        context_parts.append(f"=== {task_path} ===\n{task_content}")
-        system_context = "\n\n".join(context_parts)
-        if len(system_context) > MAX_CONTEXT_CHARS:
-            system_context = system_context[:MAX_CONTEXT_CHARS] + "\n\n[... truncated for context budget ...]"
+        system_context = _build_judge_context(
+            project_path,
+            task_file=task_file,
+            task_path=task_path,
+            max_chars=MAX_CONTEXT_CHARS,
+        )
 
         # Determine mode: explicit from command, or auto-detect for legacy "judge"
         if review_cmd == "plan-review":
@@ -1605,7 +2153,7 @@ def main():
             review_mode = "impl"
         else:  # legacy "judge" — auto-detect from status
             from tasks.core import _extract_status
-            review_mode = "impl" if _extract_status(task_file).startswith("done") else "plan"
+            review_mode = "impl" if _extract_status(task_file) == "done" else "plan"
 
         prompt_fn = plan_review_prompt if review_mode == "plan" else impl_review_prompt
         review_label = "plan review" if review_mode == "plan" else "impl review"
@@ -1624,6 +2172,7 @@ def main():
             env.pop("CLAUDE_CODE_SSE_PORT", None)
             env.pop("CLAUDE_CODE_ENTRYPOINT", None)
             env["PLAYBOOK_SESSION_ID"] = "judge"
+            env["PLAYBOOK_ROLE"] = "noninteractive"
 
             # Bypass flag injected by provider.sandbox.run() — don't pass here.
             # The judge is a read-only evaluator sandboxed via provider.sandbox
@@ -1672,6 +2221,7 @@ def main():
 
             codex_env = os.environ.copy()
             codex_env["PLAYBOOK_SESSION_ID"] = "judge"
+            codex_env["PLAYBOOK_ROLE"] = "noninteractive"
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (codex) on {task_path}...", flush=True)
@@ -1703,6 +2253,7 @@ def main():
 
             agy_env = os.environ.copy()
             agy_env["PLAYBOOK_SESSION_ID"] = "judge"
+            agy_env["PLAYBOOK_ROLE"] = "noninteractive"
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (agy) on {task_path}...", flush=True)
@@ -1737,6 +2288,7 @@ def main():
 
             pi_env = os.environ.copy()
             pi_env["PLAYBOOK_SESSION_ID"] = "judge"
+            pi_env["PLAYBOOK_ROLE"] = "noninteractive"
 
             from provider import sandbox as _sandbox
             print(f"Running {review_label} (pi) on {task_path}...", flush=True)
@@ -1753,7 +2305,10 @@ def main():
         if result.stderr:
             print(result.stderr, end="", file=sys.stderr, flush=True)
 
-        # Save output — backend-specific log files
+        # Save bounded review evidence outside task.md. The independent judge
+        # never owns the task; the invoking owner verifies and publishes any
+        # accepted findings through the task authority path.
+        MAX_REVIEW_ARTIFACT_CHARS = 50_000
         log_name = {
             "claude": "judge.log",
             "codex": "judge-codex.log",
@@ -1761,19 +2316,29 @@ def main():
             "pi": "judge-pi.log",
         }.get(backend, "judge.log")
         judge_log = task_file.parent / log_name
-        output = (result.stdout or "").strip()
+        if backend == "codex" and judge_log.is_file():
+            output = judge_log.read_text(encoding="utf-8").strip()
+        else:
+            output = (result.stdout or "").strip()
         if result.returncode != 0 and not output:
             if judge_log.exists():
                 print(f"\nReview failed (exit {result.returncode}); kept previous {judge_log.relative_to(project_path)}", flush=True)
             else:
                 print(f"\nReview failed (exit {result.returncode}); no output to save", flush=True)
         else:
-            if backend == "claude":
-                judge_log.write_text(result.stdout or "", encoding="utf-8")
-            # codex: -o already writes the file; write stdout as fallback
-            elif not judge_log.exists() or not judge_log.read_text(encoding="utf-8").strip():
-                judge_log.write_text(result.stdout or "", encoding="utf-8")
+            if len(output) > MAX_REVIEW_ARTIFACT_CHARS:
+                output = (
+                    output[:MAX_REVIEW_ARTIFACT_CHARS]
+                    + "\n\n[... review artifact truncated by Playbook ...]\n"
+                )
+            judge_log.write_text(output + ("\n" if output else ""), encoding="utf-8")
             print(f"\nSaved: {judge_log.relative_to(project_path)}", flush=True)
+            print(
+                "Owning session: verify and triage this artifact, then publish "
+                "accepted findings in the exact current task.md gate using "
+                "your normal structured file-edit tool.",
+                flush=True,
+            )
 
         sys.exit(result.returncode)
 
@@ -1821,45 +2386,23 @@ def main():
             print(f"No attributed messages for task {task_num}.", file=sys.stderr)
             sys.exit(1)
 
-        # Token-efficient output: strip markdown boilerplate, one line per message
-        import re as _re
+        # Token-efficient output: user messages only; typed Playbook events are
+        # chronology, not user intent.
+        from tasks.chat_state import parse_chat_entries
         max_line = 200
-        msg_header = _re.compile(r'^\*\*\[(M\d+)\]\*\*.*')
-        gate_header = _re.compile(r'^\*\*\[G\d+:\d+\]\*\*.*')
         for span in spans:
-            msg_id = None
-            msg_lines = []
-            in_gate = False
-            for line in span.splitlines():
-                stripped = line.strip()
-                if not stripped:
+            for entry in parse_chat_entries(span):
+                if not entry.marker.startswith("M"):
                     continue
-                if stripped == "---":
-                    in_gate = False
-                    continue
-                if gate_header.match(stripped):
-                    in_gate = True
-                    continue
-                if in_gate:
-                    continue
-                m = msg_header.match(stripped)
-                if m:
-                    # Flush previous message
-                    if msg_id and msg_lines:
-                        text = " ".join(msg_lines)
-                        if len(text) > max_line:
-                            text = text[:max_line] + "..."
-                        print(f"[{msg_id}] {text}")
-                    msg_id = m.group(1)
-                    msg_lines = []
-                else:
-                    msg_lines.append(stripped)
-            # Flush last message
-            if msg_id and msg_lines:
-                text = " ".join(msg_lines)
+                text = " ".join(entry.body.split())
                 if len(text) > max_line:
                     text = text[:max_line] + "..."
-                print(f"[{msg_id}] {text}")
+                label = f" {entry.session_name}" if entry.session_name else ""
+                identity = (
+                    f" ({entry.provider}/{entry.session_id})"
+                    if entry.provider and entry.session_id else ""
+                )
+                print(f"[{entry.marker}]{label}{identity} {text}")
 
     elif cmd == "intent":
         # Vertical retro: 4 blind intent extractions over one task's layers.
@@ -1981,50 +2524,23 @@ def main():
 
         import re
 
-        # 1. Parse messages from chat_log.md: (timestamp, msg_id, text)
-        msg_header = re.compile(
-            r'^\*\*\[(M\d+)\]\*\* \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\]'
-        )
-        gate_header = re.compile(r'^\*\*\[G\d+:\d+\]\*\*')
+        # 1. Parse only user messages; G/T/S rows are chronology, not intent.
+        from tasks.chat_state import parse_chat_entries
         entries = []  # (timestamp_str, sort_key, display_line)
         max_line = 200
-
-        msg_id = None
-        msg_ts = None
-        msg_lines = []
-        in_gate = False
-
-        def flush_msg():
-            if msg_id and msg_lines:
-                text = " ".join(msg_lines)
-                if len(text) > max_line:
-                    text = text[:max_line] + "..."
-                entries.append((msg_ts, 0, f"[{msg_id}] {text}"))
-
-        for line in chat_log.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped:
+        for entry in parse_chat_entries(chat_log.read_text(encoding="utf-8")):
+            if not entry.marker.startswith("M"):
                 continue
-            if stripped == "---":
-                in_gate = False
-                continue
-            if gate_header.match(stripped):
-                in_gate = True
-                continue
-            if in_gate:
-                continue
-            m = msg_header.match(stripped)
-            if m:
-                flush_msg()
-                msg_id = m.group(1)
-                msg_ts = m.group(2)
-                msg_lines = []
-            elif stripped.startswith("<!--"):
-                continue  # skip attribution tags / comments
-            else:
-                msg_lines.append(stripped)
-
-        flush_msg()
+            text = " ".join(entry.body.split())
+            if len(text) > max_line:
+                text = text[:max_line] + "..."
+            entries.append(
+                (
+                    entry.timestamp.removesuffix(" UTC"),
+                    0,
+                    f"[{entry.marker}] {text}",
+                )
+            )
 
         # 2. Parse task transitions from bash_history
         task_pattern = re.compile(
@@ -2111,7 +2627,10 @@ def main():
         # Also detect existing tags to avoid double-tagging
         existing_tag = re.compile(r'^<!--\s*/?T\d+\s*-->$')
 
-        lines = chat_log.read_text(encoding="utf-8").splitlines(keepends=True)
+        from tasks.chat_state import chat_log_lock
+        with chat_log_lock(chat_log.parent):
+            chat_before = chat_log.read_bytes()
+        lines = chat_before.decode("utf-8").splitlines(keepends=True)
         output = []
         current_tag = None  # currently open tag (task number)
         tags_inserted = 0
@@ -2157,7 +2676,14 @@ def main():
                 if existing_tag.match(stripped):
                     print(f"  {stripped}")
         else:
-            chat_log.write_text("".join(output), encoding="utf-8")
+            updated_chat = "".join(output).encode("utf-8")
+            try:
+                with chat_log_lock(chat_log.parent):
+                    _prepare_merge_require_snapshot(chat_log, chat_before, "chat-log")
+                    _prepare_merge_atomic_write(chat_log, updated_chat)
+            except (OSError, TaskDocumentError) as exc:
+                print(f"Error: chat tagging refused: {exc}", file=sys.stderr)
+                sys.exit(1)
             print(f"Inserted {tags_inserted} tags into chat_log.md")
 
     elif cmd == "retro":
@@ -2305,13 +2831,14 @@ def main():
                 print("Error: no active task", file=sys.stderr)
                 sys.exit(1)
             task_num = state_file.read_text(encoding="utf-8").strip()
-            tasks_dir = agent_dir / "tasks"
-            matches = list(tasks_dir.glob(f"{task_num}-*/task.md"))
-            if not matches:
-                print(f"Error: task {task_num} not found", file=sys.stderr)
+            key = resolve_session_key()
+            try:
+                task_file = validate_task_claim(agent_dir, key, task_num)
+                task_text = task_file.read_text(encoding="utf-8")
+                task_document = TaskDocument.parse(task_text)
+            except (OSError, TaskDocumentError) as exc:
+                print(f"Error: cannot log freehand task {task_num}: {exc}", file=sys.stderr)
                 sys.exit(1)
-            task_file = matches[0]
-            task_text = task_file.read_text(encoding="utf-8")
 
             # Find the freehand-start marker
             import re
@@ -2339,41 +2866,50 @@ def main():
                 print("Error: .agent/chat_log.md not found", file=sys.stderr)
                 sys.exit(1)
 
-            log_text = chat_log.read_text(encoding="utf-8")
-            # Parse message blocks: **[MNNN]** [YYYY-MM-DD HH:MM:SS UTC]
-            msg_pattern = re.compile(
-                r'^(\*\*\[M\d+\]\*\* \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) UTC\].*)',
-                re.MULTILINE
-            )
-            # Split log into message blocks by the --- separator
-            blocks = log_text.split("\n---\n")
+            from tasks.chat_state import parse_chat_entries
             extracted = []
-            for block in blocks:
-                m = msg_pattern.search(block)
-                if m:
-                    ts_str = m.group(2)
-                    try:
-                        msg_ts = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                    except ValueError:
-                        continue
-                    if msg_ts >= start_ts:
-                        extracted.append(block.strip())
+            for entry in parse_chat_entries(
+                chat_log.read_text(encoding="utf-8")
+            ):
+                if not entry.marker.startswith("M"):
+                    continue
+                try:
+                    msg_ts = datetime.strptime(
+                        entry.timestamp.removesuffix(" UTC"),
+                        "%Y-%m-%d %H:%M:%S",
+                    ).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if msg_ts >= start_ts:
+                    extracted.append(entry.raw)
 
             if not extracted:
                 print("No chat_log messages found in freehand span.")
                 return
 
-            # Insert extracted messages into task.md below the Freehand log gate
-            log_gate_pattern = re.compile(r'^(- \[ \] Freehand log\b.*)', re.MULTILINE)
-            log_gate_match = log_gate_pattern.search(task_text)
-            if not log_gate_match:
+            # Insert exact message bodies below the last semantic Freehand log
+            # gate. Opaque markers prevent captured headings/checkboxes from
+            # becoming task authority or executable gates.
+            log_gates = [
+                gate for gate in task_document.gates
+                if not gate.checked and gate.text.startswith("Freehand log")
+            ]
+            if not log_gates:
                 print("Error: no '- [ ] Freehand log' gate found in task.md", file=sys.stderr)
                 sys.exit(1)
-
-            insert_pos = log_gate_match.end()
-            log_content = "\n\n" + "\n\n---\n\n".join(extracted) + "\n"
+            gate = log_gates[-1]
+            insert_pos = sum(len(line) for line in task_document.lines[:gate.line + 1])
+            log_content = (
+                "\n<!-- playbook-recent-chat:start -->\n"
+                + "\n\n---\n\n".join(extracted)
+                + "\n<!-- playbook-recent-chat:end -->\n"
+            )
             new_text = task_text[:insert_pos] + log_content + task_text[insert_pos:]
-            task_file.write_text(new_text, encoding="utf-8")
+            try:
+                replace_claimed_task_text(task_file, key, task_text, new_text)
+            except (OSError, TaskDocumentError) as exc:
+                print(f"Error: freehand log changed before commit: {exc}", file=sys.stderr)
+                sys.exit(1)
             print(f"Inserted {len(extracted)} chat_log messages into task.md")
             return
 
@@ -2387,22 +2923,18 @@ def main():
             task_num = None
 
         if not task_num:
-            # Orchestrator mode: create a minimal freehand task (no Design Phase)
+            # Create through the normal unclaimed task path, then publish the
+            # task.md claim before its rebuildable session navigation cache.
             print("No active task — creating freehand session...")
-            from tasks.core import _next_task_number, _slugify
-            tasks_dir = agent_dir / "tasks"
-            task_num_int = _next_task_number(tasks_dir)
-            task_num = f"{task_num_int:03d}"
-            slug = _slugify("freehand")
-            task_dir = tasks_dir / f"{task_num}-{slug}"
-            task_dir.mkdir(parents=True, exist_ok=True)
-            task_file = task_dir / "task.md"
-            # Write minimal template — Freehand gate is first unchecked gate
+            task_file = create_task(
+                project_path, "freehand", task_type="quick", stub=True
+            )
+            task_num = task_file.parent.name.partition("-")[0].zfill(3)
             from datetime import datetime, timezone
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            task_file.write_text(
+            freehand_text = (
                 f"# {task_num} - Freehand\n\n"
-                f"## Status\nin_progress\n\n"
+                f"## Status\npending\n\n"
                 f"## Intent\n(freehand session — intent determined during work)\n\n"
                 f"## Work Plan\n\n"
                 f"### Freehand\n"
@@ -2411,26 +2943,34 @@ def main():
                 f"- [ ] Freehand log — run `pb-tasks freehand log` to capture chat_log messages, "
                 f"then retro-add checked gates for work done\n"
                 f"- [ ] Rewrite this freehand work into normal task gates inside this task so the final trace reads like ordinary tracked work\n"
-                f"- [ ] Rename this task folder and header to match what was actually done, then check this gate last\n",
-                encoding="utf-8",
+                f"- [ ] Rename this task folder and header to match what was actually done, then check this gate last\n"
             )
-            # Activate it
-            session_id = resolve_session_id()
-            session_dir = agent_dir / "sessions" / session_id
-            session_dir.mkdir(parents=True, exist_ok=True)
-            (session_dir / "current_state").write_text(f"{task_num}\n", encoding="utf-8")
+            original = task_file.read_text(encoding="utf-8")
+            key = resolve_session_key()
+            replace_unclaimed_task_text(task_file, original, freehand_text)
+            claim_task_document(task_file, key)
+            try:
+                write_navigation_cache(agent_dir, key, task_num)
+            except (OSError, SessionStateError) as exc:
+                print(
+                    f"Error: freehand task {task_num} is claimed but cache publication "
+                    f"failed; run pb-tasks work {task_num}: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
             print(f"Created and activated task {task_num}")
         else:
             # Work mode: insert freehand block into current task
-            tasks_dir = agent_dir / "tasks"
-            matches = list(tasks_dir.glob(f"{task_num}-*/task.md"))
-            if not matches:
-                print(f"Error: task {task_num} not found", file=sys.stderr)
+            key = resolve_session_key()
+            try:
+                task_file = validate_task_claim(agent_dir, key, task_num)
+                task_text = task_file.read_text(encoding="utf-8")
+                task_document = TaskDocument.parse(task_text)
+            except (OSError, TaskDocumentError) as exc:
+                print(f"Error: cannot enter freehand for task {task_num}: {exc}", file=sys.stderr)
                 sys.exit(1)
-            task_file = matches[0]
 
             from datetime import datetime, timezone
-            task_text = task_file.read_text(encoding="utf-8")
             now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
             freehand_block = (
@@ -2443,25 +2983,26 @@ def main():
                 f"- [ ] Rename this task folder and header to match what was actually done, then check this gate last\n"
             )
 
-            # Find Work Plan section and insert before first unchecked gate there
-            import re
-            work_plan_match = re.search(r'^## Work Plan\b', task_text, re.MULTILINE)
-            if work_plan_match:
-                after_wp = task_text[work_plan_match.start():]
-                gate_match = re.search(r'^- \[ \]', after_wp, re.MULTILINE)
-                if gate_match:
-                    insert_pos = work_plan_match.start() + gate_match.start()
-                else:
-                    sep_match = re.search(r'\n---\n', after_wp)
-                    if sep_match:
-                        insert_pos = work_plan_match.start() + sep_match.start()
-                    else:
-                        insert_pos = len(task_text)
+            # Insert before the first semantic gate in Work Plan. Fenced and
+            # captured-chat examples are never candidate instruction pointers.
+            work_plan = task_document.section_span("Work Plan")
+            if work_plan:
+                _, section_end = work_plan
+                gate_lines = [
+                    gate.line for gate in task_document.gates
+                    if work_plan[0] < gate.line < section_end
+                ]
+                insert_line = gate_lines[0] if gate_lines else section_end
+                insert_pos = sum(len(line) for line in task_document.lines[:insert_line])
             else:
                 insert_pos = len(task_text)
 
             new_text = task_text[:insert_pos] + freehand_block + "\n" + task_text[insert_pos:]
-            task_file.write_text(new_text, encoding="utf-8")
+            try:
+                replace_claimed_task_text(task_file, key, task_text, new_text)
+            except (OSError, TaskDocumentError) as exc:
+                print(f"Error: freehand task changed before commit: {exc}", file=sys.stderr)
+                sys.exit(1)
             print(f"Freehand block inserted in task {task_num}")
         print(f"Freehand mode active. Agent: wait for user instructions. Close only when user says done.")
 
@@ -2498,8 +3039,15 @@ def main():
         # 1. Project structure
         agent_tasks = resolve_agent_dir(project_path) / "tasks"
         check("project: tasks/ exists", agent_tasks.exists())
-        claude_md = project_path / "CLAUDE.md"
-        check("project: CLAUDE.md exists", claude_md.exists())
+        guidance_files = tuple(
+            name for name in ("AGENTS.md", "CLAUDE.md", "GEMINI.md")
+            if (project_path / name).is_file()
+        )
+        check(
+            "project: provider guidance exists",
+            bool(guidance_files),
+            ", ".join(guidance_files) if guidance_files else "none found",
+        )
         mind_map = project_path / "MIND_MAP.md"
         check("project: MIND_MAP.md exists", mind_map.exists())
 
@@ -2507,35 +3055,70 @@ def main():
         stdout_enc = getattr(sys.stdout, "encoding", "unknown") or "unknown"
         check("unicode: stdout encoding", "utf" in stdout_enc.lower(), stdout_enc)
 
-        # 3. Stale session dirs (current_state older than 24h — orphaned from crashed sessions)
+        # 3. Native state is durable; validate native candidates without
+        # treating historical PID/generated directories as live authority.
         agent_dir = resolve_agent_dir(project_path)
-        stale = []
         sessions_dir = agent_dir / "sessions"
-        if sessions_dir.exists():
-            cutoff = time.time() - 86400
-            for sf in sessions_dir.glob("*/current_state"):
-                try:
-                    if sf.stat().st_mtime < cutoff:
-                        stale.append(sf.parent.name)
-                except OSError:
-                    pass
-        check("session: no stale session dirs", len(stale) == 0,
-              f"stale: {', '.join(stale)}" if stale else "clean")
+        unsafe_sessions = sessions_dir.is_symlink()
+        recognized = ()
+        inert = ()
+        malformed = ()
+        if not unsafe_sessions:
+            try:
+                recognized, inert, malformed = inspect_session_directories(agent_dir)
+            except (OSError, SessionStateError):
+                unsafe_sessions = True
+        check("session: durable state is path-confined", not unsafe_sessions,
+              "no symlinked session root/entries" if not unsafe_sessions else "unsafe session symlink")
+        if not unsafe_sessions:
+            malformed_detail = ", ".join(
+                path.relative_to(agent_dir).as_posix() for path in malformed[:3]
+            )
+            check(
+                "session: native records are valid",
+                not malformed,
+                malformed_detail if malformed else f"{len(recognized)} recognized",
+            )
+            check(
+                "session: legacy/generated directories are inert",
+                True,
+                f"{len(recognized)} recognized provider-native; {len(inert)} inert ignored",
+            )
 
-        # 4. Hooks — check .claude/hooks/ (installed) or src/hooks/ (dev repo)
-        hooks_dirs = [project_path / "scripts", project_path / ".claude" / "hooks", project_path / "src" / "hooks"]
-        for hook_name in ["state-echo-hook", "task-gate-hook"]:
-            found = False
-            for hooks_dir in hooks_dirs:
-                hook_path = hooks_dir / hook_name
-                if hook_path.exists():
-                    executable = os.access(hook_path, os.X_OK)
-                    check(f"hooks: {hook_name}", executable,
-                          f"found at {hooks_dir.name}/" + ("" if executable else " but not executable"))
-                    found = True
-                    break
-            if not found:
-                check(f"hooks: {hook_name}", False, "missing")
+        # 4. Runtime closure belongs to the checkout serving this CLI, never
+        # to the project being diagnosed.
+        runtime_root = Path(__file__).resolve().parents[2]
+        runtime_errors = audit_serving_runtime(runtime_root)
+        check(
+            "runtime: serving hook closure",
+            not runtime_errors,
+            "installed/development runtime is complete"
+            if not runtime_errors
+            else "; ".join(runtime_errors[:3])
+            + "; repair: reinstall the Playbook Harness runtime",
+        )
+
+        # 4a. Init and doctor share one read-only legacy classifier.
+        from tasks.legacy_migration import inspect_legacy_project
+
+        legacy = inspect_legacy_project(
+            project_path, include_hooks=True, home=Path.home()
+        )
+        if legacy.conflicts:
+            migration_ok = False
+            migration_detail = "active legacy/manual conflict: " + "; ".join(
+                legacy.conflicts[:3]
+            )
+        elif legacy.migrated:
+            migration_ok = False
+            migration_detail = (
+                "migratable legacy: " + ", ".join(legacy.migrated)
+                + "; repair: run pb-tasks init"
+            )
+        else:
+            migration_ok = True
+            migration_detail = "current (no active legacy runtime)"
+        check("project: standalone migration state", migration_ok, migration_detail)
 
         # 4b. Check ~/.claude/settings.json for stale hook entries pointing to nonexistent paths
         user_settings = Path.home() / ".claude" / "settings.json"
@@ -2555,14 +3138,91 @@ def main():
               len(stale_hooks) == 0,
               f"stale paths: {', '.join(stale_hooks[:3])}" if stale_hooks else "clean")
 
+        # 4c. Standalone init intentionally does not install provider-global
+        # hooks, but a previously installed Agy plugin still affects this
+        # project. Make that effective capability and its provenance visible.
+        agy_plugin = Path.home() / ".gemini" / "config" / "plugins" / "playbook-harness"
+        if not agy_plugin.exists():
+            check("hooks: Agy global plugin", True, "inactive (not installed)")
+        else:
+            hook_manifests = sorted(agy_plugin.rglob("hooks.json"))
+            expected_manifest = agy_plugin / "hooks.json"
+            bridge_paths = []
+            manifest_error = ""
+            try:
+                hook_doc = json.loads(expected_manifest.read_text(encoding="utf-8"))
+                for command in iter_hook_commands(hook_doc):
+                    for token in command.split():
+                        if token.endswith("agy-hook-bridge.py"):
+                            bridge_paths.append(Path(token))
+            except (OSError, ValueError) as exc:
+                manifest_error = str(exc)
+
+            agy_bin = shutil.which("agy")
+            imported = False
+            list_error = "agy is not on PATH"
+            if agy_bin:
+                listed = subprocess.run(
+                    [agy_bin, "plugin", "list"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                try:
+                    imports = json.loads(listed.stdout).get("imports", [])
+                    imported = any(
+                        item.get("name") == "playbook-harness"
+                        and "hooks" in item.get("components", [])
+                        for item in imports
+                        if isinstance(item, dict)
+                    )
+                    if not imported:
+                        list_error = "not present in `agy plugin list`"
+                except (AttributeError, ValueError):
+                    list_error = listed.stderr.strip() or "unparseable `agy plugin list` output"
+
+            unique_bridges = sorted({str(path) for path in bridge_paths})
+            plugin_ok = (
+                hook_manifests == [expected_manifest]
+                and not manifest_error
+                and bool(unique_bridges)
+                and all(Path(path).is_file() for path in unique_bridges)
+                and imported
+            )
+            if plugin_ok:
+                detail = "active global hooks; bridge=" + ", ".join(unique_bridges)
+            else:
+                problems = []
+                if hook_manifests != [expected_manifest]:
+                    relative = [path.relative_to(agy_plugin).as_posix() for path in hook_manifests]
+                    problems.append("hook manifests=" + ", ".join(relative or ["none"]))
+                if manifest_error:
+                    problems.append("invalid root manifest: " + manifest_error)
+                if not unique_bridges:
+                    problems.append("no bridge provenance")
+                elif not all(Path(path).is_file() for path in unique_bridges):
+                    problems.append("missing bridge=" + ", ".join(unique_bridges))
+                if not imported:
+                    problems.append(list_error)
+                detail = "; ".join(problems)
+            check("hooks: Agy global plugin", plugin_ok, detail)
+
         # 5. Runtime identity (public artifact or development checkout)
         from tasks.core import VERSION as code_version
-        runtime_root = Path(__file__).resolve().parents[2]
         artifact_manifest = runtime_root / ".playbook-artifact.json"
         identified = artifact_manifest.is_file() or (runtime_root / ".git").exists()
         runtime_kind = "public artifact" if artifact_manifest.is_file() else "development checkout"
         check("runtime: checkout identified", identified,
               f"{runtime_kind}, code={code_version}" if identified else str(runtime_root))
+        try:
+            generation_surface, generation_ok = runtime_generation_status(project_path)
+        except RuntimeError as exc:
+            generation_surface, generation_ok = str(exc), False
+        check(
+            "runtime: project generation compatible with serving CLI",
+            generation_ok,
+            generation_surface.replace("\n", "; "),
+        )
 
         # 6. Python version
         import platform
@@ -2597,46 +3257,6 @@ def main():
         check("encoding: write_text/read_text have encoding=", unencoded == 0,
               f"{unencoded} unencoded calls" if unencoded else "all encoded")
 
-        # 8. Gate echo truncation
-        has_truncation = False
-        for hd in hooks_dirs:
-            echo_hook = hd / "state-echo-hook"
-            if echo_hook.exists():
-                hook_content = echo_hook.read_text(encoding="utf-8")
-                has_truncation = "cut -c" in hook_content or "GATE_TEXT_STORE" in hook_content
-                break
-        check("hooks: gate text truncation", has_truncation,
-              "prevents recursive duplication" if has_truncation else "gate text may grow unbounded")
-
-        # 9. Session-id resolver consistency (split-brain regression guard).
-        # Python and bash must produce identical session_ids without PLAYBOOK_SESSION_ID,
-        # otherwise hooks and CLI look in different .agent/sessions/ directories.
-        gate_lib = None
-        for hd in hooks_dirs + [project_path / "scripts"]:
-            cand = hd / "gate-echo-lib.sh"
-            if cand.exists():
-                gate_lib = cand
-                break
-        if gate_lib:
-            import subprocess as _sub
-            from tasks.core import find_agent_root_pid
-            saved = os.environ.pop("PLAYBOOK_SESSION_ID", None)
-            try:
-                find_agent_root_pid.cache_clear()
-                py_sid = resolve_session_id()
-                env = {k: v for k, v in os.environ.items() if k != "PLAYBOOK_SESSION_ID"}
-                r = _sub.run(["bash", "-c", f"source {gate_lib} && resolve_session_id"],
-                             capture_output=True, text=True, env=env, timeout=5)
-                bash_sid = r.stdout.strip()
-            finally:
-                if saved is not None:
-                    os.environ["PLAYBOOK_SESSION_ID"] = saved
-            agree = py_sid == bash_sid and py_sid.startswith("pid-")
-            detail = f"both → {py_sid}" if agree else f"MISMATCH py={py_sid!r} bash={bash_sid!r}"
-            check("session-id: Python ≡ bash resolver", agree, detail)
-        else:
-            check("session-id: Python ≡ bash resolver", False, "gate-echo-lib.sh not found")
-
         # Summary
         total = passed + failed
         print(f"\n{passed}/{total} checks passed", end="")
@@ -2650,7 +3270,6 @@ def main():
         # Compact one-line-per-message view of chat_log.md (no gate cruft).
         # N: show only the last N messages (default: all).
         # --width: crop each message body to W chars (default 500).
-        import re
         cmd_args = sys.argv[2:]
         last_n = None
         width = 500
@@ -2668,24 +3287,50 @@ def main():
         if not chat_log.exists():
             print("Error: .agent/chat_log.md not found", file=sys.stderr)
             sys.exit(1)
-        text = chat_log.read_text(encoding="utf-8")
-        blocks = text.split("\n---\n")
-        lines = []
-        for block in blocks:
-            m = re.match(
-                r'\*\*(\[M\d+\])\*\* \[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}):\d{2} UTC\] `(\w+)`\s*\n+(.*)',
-                block.strip(), re.DOTALL
-            )
-            if m:
-                mid, ts, role, body = m.groups()
-                body = " ".join(body.split())
-                if len(body) > width:
-                    body = body[:width - 1] + "…"
-                lines.append(f"{mid} {ts} {role:<6} {body}")
-        if last_n is not None:
-            lines = lines[-last_n:]
-        for line in lines:
+        for line in _compact_chat_lines(chat_log, last_n=last_n, width=width):
             print(line)
+
+    elif cmd == "narrative":
+        from . import narrative as narrative_mod
+
+        project_path = find_project_root()
+        action = "status"
+        lines_back: int | None = None
+        limit: int | None = None
+        remaining = list(cmd_args)
+        while remaining:
+            a = remaining.pop(0)
+            if a in ("--render", "--pending", "--status"):
+                action = a.lstrip("-")
+            elif a == "--lines" and remaining:
+                try:
+                    lines_back = int(remaining.pop(0))
+                except ValueError:
+                    print("Error: --lines requires a number", file=sys.stderr)
+                    sys.exit(1)
+            elif a == "--limit" and remaining:
+                try:
+                    limit = int(remaining.pop(0))
+                except ValueError:
+                    print("Error: --limit requires a number", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(f"Unknown argument: {a}", file=sys.stderr)
+                sys.exit(1)
+        try:
+            if action == "pending":
+                print(narrative_mod.dump_pending(project_path, limit, lines_back))
+            else:
+                report = (
+                    narrative_mod.build(project_path, lines_back)
+                    if action == "render"
+                    else narrative_mod.status(project_path, lines_back)
+                )
+                for line in report.lines():
+                    print(line)
+        except narrative_mod.NarrativeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif cmd == "prepare-merge":
         project_path = find_project_root()
@@ -2710,4 +3355,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except NativeSessionIdentityError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
