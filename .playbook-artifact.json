@@ -1,5 +1,5 @@
 {
-  "commit": "bf3557da23a59e2f407e3ed89b9bbb0d9f9b3018",
+  "commit": "0f7f10db2c7fbc469cdcb7a826d4b1dde8a3c814",
   "files": [
     {
       "destination": "LICENSE",
@@ -492,6 +492,12 @@
       "mode": "0644",
       "sha256": "692a3fac06bef5fd006ac5fb8a825533b00998bdac8906e884e91382cbdeb940",
       "source": "skills/playbook/ui-debug.md"
+    },
+    {
+      "destination": "skills/simple-speak/SKILL.md",
+      "mode": "0644",
+      "sha256": "3e9059c6080410c03bdb29035c9bac72e3ba0ba111e55374362e92b83a81b00c",
+      "source": "skills/simple-speak/SKILL.md"
     },
     {
       "destination": "skills/stack/SKILL.md",
