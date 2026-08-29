@@ -1,5 +1,5 @@
 {
-  "commit": "0f7f10db2c7fbc469cdcb7a826d4b1dde8a3c814",
+  "commit": "fc7313274e899e8ae99962fa56f11bc2fa895548",
   "files": [
     {
       "destination": "LICENSE",
@@ -10,7 +10,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "a247557735e85e406595a9422dedb4dafeb5f2636fbdde88f0d567910cafca51",
+      "sha256": "a6775ecb64b65e5e5094f2784022cc701e9da41b924f380a872892b643a5119f",
       "source": "README.md"
     },
     {
@@ -286,14 +286,62 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "1e75ea1c70da9369d152c206ce30f372c2bb64828b28e7214528678017867eb6",
+      "sha256": "aedd6a2414e723824edfe7c99c7e0808e9a1f626940dfaa161b104c6df42f861",
       "source": "docs/RELEASE_NOTES.md"
+    },
+    {
+      "destination": "docs/command-reference.md",
+      "mode": "0644",
+      "sha256": "7d00e6fe1c84298d388d8d720161b6aefab6821c9f44f52c2bdbdfed0eb1df83",
+      "source": "docs/command-reference.md"
+    },
+    {
+      "destination": "docs/getting-started.md",
+      "mode": "0644",
+      "sha256": "45fa08d04a630f9ecc1a08db54f10df761e057fc5996350335c76c06f273cf67",
+      "source": "docs/getting-started.md"
+    },
+    {
+      "destination": "docs/how-playbook-works.md",
+      "mode": "0644",
+      "sha256": "e6010fef6824d4efefbebb832290b5b6fd31c87107ffc53e641edda3bcf5afc4",
+      "source": "docs/how-playbook-works.md"
+    },
+    {
+      "destination": "docs/install-and-upgrade.md",
+      "mode": "0644",
+      "sha256": "c8f0075ca9ba843fd8d8a3a38dc74692f9295eb888f4be193992b08f6e28116d",
+      "source": "docs/install-and-upgrade.md"
     },
     {
       "destination": "docs/integrating-omp.md",
       "mode": "0644",
       "sha256": "76b22ef4f3ca658daec21f0b9efecfe9d01c2e6f7138e36039db6954cbf9b22a",
       "source": "docs/integrating-omp.md"
+    },
+    {
+      "destination": "docs/memory.md",
+      "mode": "0644",
+      "sha256": "056356fc76c6ad124900dcd1c54eff2dd830e1319372f9369e3fd32d929fe2c5",
+      "source": "docs/memory.md"
+    },
+    {
+      "destination": "docs/philosophy.md",
+      "mode": "0644",
+      "sha256": "90085c29e026b2abed59741483a5745a23cd4d057d3cdf270ad48edddf2ebe56",
+      "source": "docs/philosophy.md"
+    },
+    {
+      "destination": "docs/sessions-and-monitoring.md",
+      "mode": "0644",
+      "sha256": "9997b4a89df7de2a9f5b80695fdb94fb7a37357d78b68d566de046e669931b54",
+      "source": "docs/sessions-and-monitoring.md"
+    },
+    {
+      "destination": "docs/trust.md",
+      "mode": "0644",
+      "sha256": "e023f470857ef9ef9eb43b940ca4a542c8c43a2d52196dae14a8e76d9f9ec139",
+      "source": "docs/trust.md"
     },
     {
       "destination": "hooks/claude-standalone.json",
@@ -472,7 +520,7 @@
     {
       "destination": "skills/playbook/SKILL.md",
       "mode": "0644",
-      "sha256": "bf402f4346c80a0cfa05bc4f4e560419cc2f1a53eca5f7b9632ac1a6ffb53ca5",
+      "sha256": "3160a63e314459a69b42637fd5d47c83b8d1f0a5f1f45b0ba36295ab1728feb5",
       "source": "skills/playbook/SKILL.md"
     },
     {

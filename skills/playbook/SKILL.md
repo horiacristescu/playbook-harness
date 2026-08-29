@@ -9,21 +9,44 @@ argument-hint: [pattern-name]
 
 # Playbook
 
+## What Playbook is
+
+Playbook is a project harness for coding agents.
+
+The project, not the conversation, owns the durable state. Chat keeps the
+human's evolving intent. `task.md` holds active work. Tests preserve
+expectations. `MIND_MAP.md` carries project knowledge into later sessions.
+
+The harness is meant to support more agent autonomy without making the work
+opaque. Hooks keep a few important rules out of model memory. Reviews provide a
+fresh reading. Managed sessions let a human or monitor observe and steer longer
+work.
+
+When a user asks what Playbook is or why it exists, explain this project model
+before listing commands. Use short, plain language.
+
+For a deeper answer, develop one subject at a time: why a project needs more
+than conversation history; how `task.md` carries work; how chat, tasks, tests,
+logs, and the mind map hold different kinds of memory; and how evidence supports
+trust without promising certainty. Do not assume that this copied skill has
+relative access to the public runtime documentation.
+
 ## Rhythm
 
-Every task follows a rhythm: **push → stop → push → stop → close**.
+Substantial tasks benefit from a rhythm: **push → stop → push → stop → close**.
 
 Pushing is doing the work. Stopping is questioning the work. Tasks that are
 all push produce shallow output. Tasks that alternate push and stop produce
 depth. Mature adoption shows the full pattern: Design Phase as foundation,
-quantified checkpoints, critique at every transition. The reflection gates
-below enforce the stops.
+task-specific checkpoints and critique at important transitions. The
+reflection gates below create those stops when the work needs them.
 
 ### Reflection Gates
 
-Insert these between work sections. They are not optional. Their purpose
-is mode-switching: forcing the shift from collecting to interpreting. Without
-them, the agent stays in action mode and produces shallow output.
+Insert these between meaningful work sections in uncertain or consequential
+tasks. Right-size them to the work; a quick, well-specified change should not
+carry the same reflection program as a long investigation. Their purpose is
+mode-switching: creating a deliberate shift from collecting to interpreting.
 
 **Critique** (use FIRST — before diving in, and when output feels thin):
 ```

@@ -1,5 +1,17 @@
 # Playbook Harness release notes
 
+## A clearer public introduction — 2026-08-29
+
+The public README now begins with what Playbook is, why a project needs it, and
+what working with it feels like. Detailed installation and command material has
+moved into focused pages for philosophy, project flow, memory, trust, sessions,
+getting started, lifecycle operations, and reference.
+
+The project-local Playbook skill carries the same explanation, so an agent can
+introduce the harness without depending on runtime-only documentation. Public
+artifact and provider tests verify that the complete set ships, its links
+resolve, and important operational recovery paths remain available.
+
 ## Narrative, natural gate editing, and migration repair — 2026-08-13
 
 This release adds `pb-tasks narrative` and the `/narrative` skill. Agents author
