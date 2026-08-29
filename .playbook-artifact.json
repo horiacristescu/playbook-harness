@@ -1,5 +1,5 @@
 {
-  "commit": "46b476d5c85e527b87d0bc117078e663af096939",
+  "commit": "4d7db8007d375fdc408f097fce0e8bb2f3be6fba",
   "files": [
     {
       "destination": "LICENSE",
@@ -328,7 +328,7 @@
     {
       "destination": "docs/philosophy.md",
       "mode": "0644",
-      "sha256": "1c2a18f1f224a42b84c90462b5ec150f78037ccfa469668cf9d05591090670d7",
+      "sha256": "41e0ceee72e44344aec17c1c84a7945e38d109486340fb2213bac80fcf4d4b5c",
       "source": "docs/philosophy.md"
     },
     {
@@ -850,7 +850,7 @@
     {
       "destination": "src/tmux_agent.py",
       "mode": "0644",
-      "sha256": "17e23a6165962f818fd3b0a8b6189ba897c953172ed9be24c3816c9f8960f78a",
+      "sha256": "011ced5f63dfb14480a6e95a4c317f7b31f05a817d0a713d8bf260d144e97a17",
       "source": "src/tmux_agent.py"
     }
   ],

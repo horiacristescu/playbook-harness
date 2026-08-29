@@ -199,6 +199,7 @@ class TmuxClient:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
         absent_markers = (
             "can't find session",
+            "no current target",
             "no server running",
             "no such file or directory",
             "connection refused",
@@ -241,7 +242,22 @@ def require_owned_server(client: TmuxClient) -> None:
 
 
 def _prepare_owned_server(client: TmuxClient) -> bool:
-    exists = client.run(["list-sessions"], check=False).returncode == 0
+    # `list-sessions` is not a server-existence probe: with `exit-empty off`,
+    # tmux keeps the server alive after its final session exits and reports
+    # `no current target`.  A global option query remains valid in that state.
+    completed = client.run(["show-options", "-g"], check=False)
+    exists = completed.returncode == 0
+    if not exists:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        absent_markers = (
+            "no server running",
+            "no such file or directory",
+            "connection refused",
+        )
+        if not any(marker in detail.casefold() for marker in absent_markers):
+            raise TmuxAgentError(
+                detail or "tmux could not determine whether its server exists"
+            )
     if exists:
         require_owned_server(client)
     return exists

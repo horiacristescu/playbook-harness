@@ -36,12 +36,15 @@ fails for different reasons: the agent loses the current intent, skips a
 check, trusts an assumption that was never tested, or finishes something that
 looks plausible but is difficult for the human to verify.
 
-Playbook does not answer this with more reminders in a prompt. A hook echoes
-the current gate after every tool call, blocks code edits when no task is
-active, and refuses to close a task with open gates. Tests sit beside each
-change, `pb-tasks plan-review` and `impl-review` bring in a reader who has not
-seen the conversation, and `pb-session` puts long work in a tmux session a
-human can look into.
+Playbook does not answer this with more reminders in a prompt. Code work has
+to happen inside a task with a written plan, because the plan is where testing
+and review are written down as gates, so they are not left to the end and then
+dropped. A hook echoes the current gate after every tool call, which is
+what lets an agent walk through hundreds of gates without losing its place.
+Closing a task with open gates used to be a matter of discipline; now a hook
+refuses it. Around that, tests sit beside each change, `pb-tasks plan-review`
+and `impl-review` bring in a reader who has not seen the conversation, and
+`pb-session` puts long work in a tmux session a human can look into.
 
 These constraints are what let the human grant more autonomy.
 
