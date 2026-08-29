@@ -48,8 +48,8 @@ session:
 pb-tasks bootstrap
 ```
 
-Bootstrap shows the project map, recent context, pending tasks, and the commands
-needed to continue. It is orientation, not permission to choose work. The agent
+Bootstrap prints `MIND_MAP.md`, the last chat messages, pending tasks, and the
+commands needed to continue. It is orientation, not permission to choose work. The agent
 returns to chat and waits for direction.
 
 ## Create the first task

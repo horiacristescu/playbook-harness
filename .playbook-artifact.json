@@ -1,5 +1,5 @@
 {
-  "commit": "fc7313274e899e8ae99962fa56f11bc2fa895548",
+  "commit": "46b476d5c85e527b87d0bc117078e663af096939",
   "files": [
     {
       "destination": "LICENSE",
@@ -10,7 +10,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "a6775ecb64b65e5e5094f2784022cc701e9da41b924f380a872892b643a5119f",
+      "sha256": "1aed11b5ec8bccc29f8028a02ea6c778a5878ffdc9060d87aa59bfcaa1160958",
       "source": "README.md"
     },
     {
@@ -298,13 +298,13 @@
     {
       "destination": "docs/getting-started.md",
       "mode": "0644",
-      "sha256": "45fa08d04a630f9ecc1a08db54f10df761e057fc5996350335c76c06f273cf67",
+      "sha256": "d32f9c2952fb41706e80bc73ac6b583a7dafdc9d19c3582d8a332e1e514d08bf",
       "source": "docs/getting-started.md"
     },
     {
       "destination": "docs/how-playbook-works.md",
       "mode": "0644",
-      "sha256": "e6010fef6824d4efefbebb832290b5b6fd31c87107ffc53e641edda3bcf5afc4",
+      "sha256": "dec8656004afa6e584661c14c0017ee9f76442651ead1c2c5ead63b134be049d",
       "source": "docs/how-playbook-works.md"
     },
     {
@@ -322,25 +322,25 @@
     {
       "destination": "docs/memory.md",
       "mode": "0644",
-      "sha256": "056356fc76c6ad124900dcd1c54eff2dd830e1319372f9369e3fd32d929fe2c5",
+      "sha256": "ba7b64afe7ab4fc5037a5495b3aad33ad568c07e58c8520de6030be430503115",
       "source": "docs/memory.md"
     },
     {
       "destination": "docs/philosophy.md",
       "mode": "0644",
-      "sha256": "90085c29e026b2abed59741483a5745a23cd4d057d3cdf270ad48edddf2ebe56",
+      "sha256": "1c2a18f1f224a42b84c90462b5ec150f78037ccfa469668cf9d05591090670d7",
       "source": "docs/philosophy.md"
     },
     {
       "destination": "docs/sessions-and-monitoring.md",
       "mode": "0644",
-      "sha256": "9997b4a89df7de2a9f5b80695fdb94fb7a37357d78b68d566de046e669931b54",
+      "sha256": "95f00808d9c13c369fe64c09293d0905818164ac8dafd8b80a76140f3768140b",
       "source": "docs/sessions-and-monitoring.md"
     },
     {
       "destination": "docs/trust.md",
       "mode": "0644",
-      "sha256": "e023f470857ef9ef9eb43b940ca4a542c8c43a2d52196dae14a8e76d9f9ec139",
+      "sha256": "93a1ea7f22371e022c5350bd3ca9cf7dbd4bc9d5a3c23bdf6d4937f1d0fed185",
       "source": "docs/trust.md"
     },
     {
