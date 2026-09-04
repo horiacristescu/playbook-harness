@@ -3,6 +3,9 @@ description: Initialize or refresh this project for Playbook Harness
 argument-hint: "[project-path]"
 allowed-tools: [Read, Bash]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/init.md","source_hash":"8bfc74af88b23b58c9977fd69cbcdf5e4350bf55330735d90eedbfce5a217cc6"} -->
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/init.md","source_hash":"90270fdcc36199a081ed1bd8a192ddf8b59ef06e5f0ad94d3365d830b1622499"} -->
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/init.md","source_hash":"8b06b0ee3318dc5b68f774ac1b309f29b674d8e920380da90d7e9c52faa6ed84"} -->
 <!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/init.md","source_hash":"5ffa10f6b1cba071c2dd38d7efcef1ba427271bd2e567ba74b96316f0536df57"} -->
 
 # Playbook Init

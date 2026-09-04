@@ -1,0 +1,103 @@
+# One expression per line, case-insensitive, matched on word boundaries.
+# Lines starting with # are ignored. Edit freely; lists like this go stale.
+# --- vocabulary
+delve
+tapestry
+testament to
+underscore
+underscores
+underscoring
+multifaceted
+pivotal
+crucial
+vibrant
+robust
+seamless
+seamlessly
+leverage
+leveraging
+foster
+fostering
+showcase
+showcasing
+garner
+meticulous
+meticulously
+intricate
+realm
+beacon
+unwavering
+ever-evolving
+game-changer
+game changer
+paradigm shift
+cutting-edge
+state-of-the-art
+groundbreaking
+transformative
+revolutionize
+holistic
+synergy
+streamline
+elevate
+embark
+unlock
+unleash
+empower
+empowering
+navigate the complexities
+landscape of
+in the realm of
+the world of
+deep dive
+journey
+# --- connective filler
+additionally,
+furthermore,
+moreover,
+ultimately,
+in conclusion
+in summary
+it's worth noting
+it is worth noting
+it's important to note
+it is important to note
+at the end of the day
+when it comes to
+in today's fast-paced
+in an era of
+whether you're
+look no further
+let's dive in
+buckle up
+# --- verbs of hollow significance
+serves as a
+stands as a
+plays a vital role
+plays a crucial role
+plays a key role
+aims to
+ensuring that
+a wide range of
+a myriad of
+# --- self-narration and chat praise (from the skill)
+worth pulling on
+worth sitting with
+the deeper point
+the deeper structure
+the actual move
+the whole trick
+the missing piece
+the cleanest framing
+this changes the picture
+load-bearing
+does real work
+earns its keep
+the source of truth
+the core insight
+the real signal
+the key move
+that's exactly right
+you're naming the thing
+epistemically
+substrate

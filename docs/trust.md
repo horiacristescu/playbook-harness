@@ -2,17 +2,16 @@
 
 Playbook does not make agent work correct by declaration. It creates places
 where mistakes can become visible: a plan a reviewer reads before any code
-exists, tests beside each change, a gate-by-gate record in `task.md`, and a
-session a human can look into. Trust grows from those checks.
+exists, tests beside each change, a session a human can look into. Trust grows
+from those checks.
 
 ## Start with the intended result
 
 A technically clean implementation can still solve the wrong problem.
 
 The task records the human's intent before the code changes, so a plan review
-can ask whether the proposed work matches that intent, whether important
-assumptions are still hidden, and whether the planned tests would prove the
-right thing. Writing the plan down makes assumptions easier to inspect before
+can ask whether the proposed work matches that intent and whether the planned
+tests would prove the right thing. Writing the plan down makes assumptions easier to inspect before
 they harden into code.
 
 ## Test the state that matters
@@ -51,8 +50,7 @@ operating system.
 ## Keep live work observable
 
 Managed sessions let a human or monitor inspect an agent while it works, which
-matters most when execution is long, external systems are involved, or several
-agents are active.
+matters most when execution is long or several agents are active.
 
 A silent pane is not proof of completion. A sent message is not proof that the
 agent read it. The monitor distinguishes what was recorded, observed, sent,
@@ -71,7 +69,7 @@ Trust comes from combining the checks that fit the risk.
 
 A trustworthy result should be explainable later.
 
-The task records what was attempted, tests record important expectations, logs
-and traces preserve live facts, and reviews record a second reading. The human
+The task records what was attempted, tests record what must stay true, and
+reviews record a second reading. The human
 can see where confidence came from and where uncertainty remains, which is
 what justified trust looks like here: evidence proportional to the claim.

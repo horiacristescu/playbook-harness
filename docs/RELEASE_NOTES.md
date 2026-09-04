@@ -1,5 +1,15 @@
 # Playbook Harness release notes
 
+## A humanizer skill with numbers — 2026-08-29
+
+The humanizer skill now ships in the library, so every initialized provider
+gets it. Beside the reading checklist it carries a small script,
+`scripts/prose_stats.py`, that reports banned expressions with line numbers
+and then sentence, paragraph, and enumeration statistics against a baseline
+frozen from six well-regarded project READMEs. Project initialization now
+installs `.py` and `.txt` files found inside library skills, not only
+Markdown and YAML.
+
 ## A clearer public introduction — 2026-08-29
 
 The public README now begins with what Playbook is, why a project needs it, and

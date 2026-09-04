@@ -2,9 +2,9 @@
 
 Playbook starts from a small observation: a conversation is not a project.
 
-A conversation can be productive. The agent may understand the problem, make
-good decisions, and finish useful work, and then the conversation ends while
-the project keeps going.
+A conversation can be productive. The agent may understand the problem and
+finish useful work, and then the conversation ends while the project keeps
+going.
 
 If the important state stays in chat, the human becomes responsible for
 carrying it forward, and the next session begins with another explanation. Old
@@ -21,20 +21,20 @@ plan and progress, and the architecture and standing decisions live in
 The central object in Playbook is `task.md`.
 
 It begins with the human's intent, grows into a plan, and then becomes the
-place where the agent records progress, tests, discoveries, and changes of
-direction. When the work is finished, the same file remains as an account of
-how the implementation actually went.
+place where the agent records progress and changes of direction. When the work
+is finished, the same file remains as an account of how the implementation
+actually went.
 
-This is different from a disposable todo list. Another agent can read the
-task, a judge can review it, the human can edit it while the work is underway,
-and a later retrospective can compare the plan with what happened.
+This is different from a disposable todo list. A judge can review the task,
+the human can edit it while the work is underway, and a later retrospective can
+compare the plan with what happened.
 
 ## Autonomy needs support
 
 Coding agents are already capable of completing many clear tasks. Longer work
-fails for different reasons: the agent loses the current intent, skips a
-check, trusts an assumption that was never tested, or finishes something that
-looks plausible but is difficult for the human to verify.
+fails differently: the agent loses the current intent, or trusts an assumption
+that was never tested, or finishes something that looks plausible but is
+difficult for the human to verify.
 
 Playbook does not answer this with more reminders in a prompt. Code work has
 to happen inside a task with a written plan, because the plan is where testing
@@ -54,26 +54,25 @@ Playbook is mostly text files and ordinary shell work.
 
 Agents are well trained to read and edit text, and humans can do the same, so
 there is no private planning database that only the harness understands. A
-task can be opened in an editor, changed in conversation, passed to another
-agent, or reviewed in a retro months later.
+task can be opened in an editor, passed to another agent, or reviewed in a
+retro months later.
 
-The command line is kept for operations that benefit from one reliable action:
-starting a task, selecting the active task, running a review, or opening a
-managed session. The human should not need to memorize the whole harness,
-because each stage makes the next action clear.
+The command line is kept for the few operations that should be one reliable
+action, like starting a task or opening a managed session. The human should not
+need to memorize the whole harness, because each stage makes the next action
+clear.
 
 ## The human remains part of the system
 
 Playbook is not designed to remove the human from the project.
 
-The human supplies intent, notices when the project feels wrong, adds
-constraints, and decides what is worth doing. The harness spares the human from
+The human supplies intent, notices when the project feels wrong, and decides
+what is worth doing. The harness spares the human from
 explaining the project again each session and makes the agent's work easy to
 inspect, but it does not turn judgment into a background service.
 
-This is why plans, tasks, tests, and monitor output remain readable: the human
-can enter the work at any point without first reconstructing an invisible
-agent state.
+This is why tasks and monitor output stay readable: the human can enter the
+work at any point without first reconstructing an invisible agent state.
 
 ## The harness should learn
 

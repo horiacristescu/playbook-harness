@@ -214,6 +214,12 @@ def _runtime_asset_root(public_name: str, development_name: str) -> Path:
     return development if development.is_dir() else runtime / public_name
 
 
+# Skill trees may carry small stdlib scripts and plain-text data next to their
+# Markdown (skills/humanizer/scripts). Python and text files take the hash
+# marker on line 1, so shipped scripts must not rely on a shebang.
+SKILL_ASSET_SUFFIXES = frozenset({".md", ".yaml", ".yml", ".py", ".txt"})
+
+
 def _managed_markdown_tree(
     source_root: Path, destination: str
 ) -> tuple[ManagedFileIntent, ...]:
@@ -222,7 +228,7 @@ def _managed_markdown_tree(
     intents = []
     for source in sorted(
         path for path in source_root.rglob("*")
-        if path.is_file() and path.suffix in {".md", ".yaml", ".yml"}
+        if path.is_file() and path.suffix in SKILL_ASSET_SUFFIXES
     ):
         body = source.read_text(encoding="utf-8")
         relative_source = source.relative_to(source_root).as_posix()

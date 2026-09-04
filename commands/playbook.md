@@ -3,6 +3,9 @@ description: Show workflow patterns and task execution guidance
 argument-hint: "[pattern-name]"
 allowed-tools: [Read, Glob, Grep]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/playbook.md","source_hash":"ab12a66873e5106df2f31b134ad08c72bdd413aec10e851ced19e4dd41222fb9"} -->
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/playbook.md","source_hash":"dd430e7dd2252216e5529b7e8dcdcc58ad11e2e366ebf2a2f6f29f8775043126"} -->
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/playbook.md","source_hash":"17245f5712743152fcc97ca0901b335c3591b76fd2322b31fb25c72a97ab40e8"} -->
 <!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/playbook.md","source_hash":"049a3126bd973ff3b9b860b55f8cb0df9d5eeb02613d9339972c80fc697dd3f4"} -->
 
 # Playbook

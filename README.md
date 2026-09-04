@@ -2,27 +2,29 @@
 
 Playbook is a project harness for coding agents.
 
-It keeps plans, progress, tests, and project knowledge in ordinary files that
-remain available when a conversation ends or another agent takes over. Work is
-organized in `task.md`, where the agent follows one step at a time, records
-what it learns, and tests the result before moving on.
+It keeps plans, progress, and project knowledge in ordinary files that remain
+available when a conversation ends or another agent takes over. Work is
+organized in `task.md`, where the agent follows one step at a time and tests
+the result before moving on.
 
 You can still talk to the agent normally. Playbook logs your messages to
 `.agent/chat_log.md` and turns the work into files, so the conversation leaves
 something behind.
 
+> Playbook uses ordinary agent-extension mechanisms to make work unusually durable and inspectable.
+
 ## Why it exists
 
 A coding agent can do useful work in one session. A project lasts longer.
 
-Over time, decisions become buried in chat, plans change, and tests gain
-meanings that are not obvious from their code. The human ends up being the one
-who remembers why the project looks the way it does.
+Over time, decisions get buried in chat and tests gain meanings that are not
+obvious from their code. The human ends up being the one who remembers why the
+project looks the way it does.
 
 Playbook writes those things down inside the project: your messages go to a
 chat log, each piece of work gets a `task.md`, and the architecture and
-standing decisions live in `MIND_MAP.md`. The current agent reads them, a
-future agent picks them up, and you can inspect or edit them at any time.
+standing decisions live in `MIND_MAP.md`. A future agent picks them up
+where the last one stopped, and you can inspect or edit them at any time.
 
 ## What working with it feels like
 
@@ -36,8 +38,8 @@ implementation.
 
 For longer work, a managed session can keep the agent observable and
 resumable. A monitor can watch several sessions without taking ownership away
-from them. A retrospective can later turn repeated lessons into better tests,
-tools, logs, guidance, or project memory.
+from them. A retrospective can later turn a repeated lesson into a test or a
+tool.
 
 The harness supports Claude Code, Codex, OMP, Pi, and guidance-only use with
 Antigravity. The task files, chat log, and mind map are the same whichever

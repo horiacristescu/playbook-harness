@@ -2,6 +2,9 @@
 description: Analyze the project mind map for staleness, routing, and compression opportunities
 allowed-tools: [Read, Bash, Grep, Glob]
 ---
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/mindmap-optimize.md","source_hash":"b84678987d1e091921809c902907a3b4e8c113a5e777ec36ccf9f60f0289e523"} -->
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/mindmap-optimize.md","source_hash":"06c8fc348c8d0a97390055be4191fb530c6f8d5e2cc798065a09e85e5348eb58"} -->
+<!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/mindmap-optimize.md","source_hash":"a9cc575bad7dea4445de30572030608e9bafd00eb353dea4270d077e769024f3"} -->
 <!-- playbook-managed: {"managed_by":"playbook-harness","schema":2,"source":"skills/mindmap-optimize.md","source_hash":"e4ef940381cf9f4c8118bc5f49d7dbb0413a4e4bdd1a42e39d8da5db13d38595"} -->
 
 # Mind Map Optimize

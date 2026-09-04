@@ -1,5 +1,5 @@
 {
-  "commit": "4d7db8007d375fdc408f097fce0e8bb2f3be6fba",
+  "commit": "1524e4bb2586e1c2e9268508b16a9bae9565abb6",
   "files": [
     {
       "destination": "LICENSE",
@@ -10,7 +10,7 @@
     {
       "destination": "README.md",
       "mode": "0644",
-      "sha256": "1aed11b5ec8bccc29f8028a02ea6c778a5878ffdc9060d87aa59bfcaa1160958",
+      "sha256": "433f22bb02b4ade49f48133df27c5b38931381362937538ae1c47b8a6a1e6fcd",
       "source": "README.md"
     },
     {
@@ -244,49 +244,49 @@
     {
       "destination": "commands/freehand.md",
       "mode": "0644",
-      "sha256": "0c2e4c40b8c87939f51e5d0166988ef46d54e4de812dc0b82edafda880b1abad",
+      "sha256": "c32aba71ace17bdbc44f3d4d87f3c526da837e8d9e72323563a72d13e679b5fd",
       "source": ".claude/commands/freehand.md"
     },
     {
       "destination": "commands/init.md",
       "mode": "0644",
-      "sha256": "8b06b0ee3318dc5b68f774ac1b309f29b674d8e920380da90d7e9c52faa6ed84",
+      "sha256": "b82d1afe9ad72a5ba5a03acbb197d83dbd46f7b48f2768e1fe253a527a377596",
       "source": ".claude/commands/init.md"
     },
     {
       "destination": "commands/intent.md",
       "mode": "0644",
-      "sha256": "b6cbb5a2250814344b79fe2b80f83f0129e316374eaea8bbc8edb3a770f145b2",
+      "sha256": "a097f25a92cc5e7f9ea748ca2bba3459ad8b9ed2c3df85f186a5498eba845643",
       "source": ".claude/commands/intent.md"
     },
     {
       "destination": "commands/mindmap-optimize.md",
       "mode": "0644",
-      "sha256": "a9cc575bad7dea4445de30572030608e9bafd00eb353dea4270d077e769024f3",
+      "sha256": "42416bd6fc79a10b0617e4d5f6adc2e401d7ceaa2cbf770b4852a6efdfe52b62",
       "source": ".claude/commands/mindmap-optimize.md"
     },
     {
       "destination": "commands/mindmap.md",
       "mode": "0644",
-      "sha256": "206042a85b5e2545bedd040e167c714f9ebe6dd1e53d18b6a2c4f51a1ba89974",
+      "sha256": "edaf667fec274d16d48118cd75955d351a6100d997d530c8a0e1bdaa66489c63",
       "source": ".claude/commands/mindmap.md"
     },
     {
       "destination": "commands/playbook.md",
       "mode": "0644",
-      "sha256": "17245f5712743152fcc97ca0901b335c3591b76fd2322b31fb25c72a97ab40e8",
+      "sha256": "3023268bfa238493edde9a52e87a53a12595bc68c0c7703a956be62c4115c72b",
       "source": ".claude/commands/playbook.md"
     },
     {
       "destination": "commands/upgrade.md",
       "mode": "0644",
-      "sha256": "176e62d5db13200d3ba12df25388cb328d138e04b4e4967af0cc993e6abc85f8",
+      "sha256": "29c1d59a78bfd5074cd560c3f2fe26eed6516c434a6b02fdfd8afdb7707539db",
       "source": ".claude/commands/upgrade.md"
     },
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "aedd6a2414e723824edfe7c99c7e0808e9a1f626940dfaa161b104c6df42f861",
+      "sha256": "067cb012abc25d71ffe8bbb591137b6f35611b1d8631c6928bc5de59d1fab928",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -304,7 +304,7 @@
     {
       "destination": "docs/how-playbook-works.md",
       "mode": "0644",
-      "sha256": "dec8656004afa6e584661c14c0017ee9f76442651ead1c2c5ead63b134be049d",
+      "sha256": "2ed9217a1301c5deb737d10df9dad175ec07c99874f280052b649d44d6c5277e",
       "source": "docs/how-playbook-works.md"
     },
     {
@@ -328,7 +328,7 @@
     {
       "destination": "docs/philosophy.md",
       "mode": "0644",
-      "sha256": "41e0ceee72e44344aec17c1c84a7945e38d109486340fb2213bac80fcf4d4b5c",
+      "sha256": "1965cdb04ca30d306d704b9ec8a414cc5752d2d7d9c4d954fde9cc0ca405d62e",
       "source": "docs/philosophy.md"
     },
     {
@@ -340,7 +340,7 @@
     {
       "destination": "docs/trust.md",
       "mode": "0644",
-      "sha256": "93a1ea7f22371e022c5350bd3ca9cf7dbd4bc9d5a3c23bdf6d4937f1d0fed185",
+      "sha256": "f01b1d97b8a7d725c862a26308adc263c2f5d5a2efaff7c934092361a42066a7",
       "source": "docs/trust.md"
     },
     {
@@ -494,6 +494,24 @@
       "source": "skills/culture/assets/task-template.md"
     },
     {
+      "destination": "skills/humanizer/SKILL.md",
+      "mode": "0644",
+      "sha256": "ff823e2a66d046b388f7247292c5b7a98b3c59370c3eaf7eeda45103cefc9c52",
+      "source": "skills/humanizer/SKILL.md"
+    },
+    {
+      "destination": "skills/humanizer/scripts/banned.txt",
+      "mode": "0644",
+      "sha256": "411ce762635a3129ead916ca879963f4e12b943a9244ea893e5fa2979062bddb",
+      "source": "skills/humanizer/scripts/banned.txt"
+    },
+    {
+      "destination": "skills/humanizer/scripts/prose_stats.py",
+      "mode": "0644",
+      "sha256": "3fa683d5fc927ea7081c766c54398fbed4b333bfc17303fd32b9c92b2d4d84db",
+      "source": "skills/humanizer/scripts/prose_stats.py"
+    },
+    {
       "destination": "skills/judge/SKILL.md",
       "mode": "0644",
       "sha256": "1e3c0ac9cb13d889da1393b341fb4a3fb5532bb87ab0fa2a184f72d51e36b419",
@@ -546,6 +564,12 @@
       "mode": "0644",
       "sha256": "3e9059c6080410c03bdb29035c9bac72e3ba0ba111e55374362e92b83a81b00c",
       "source": "skills/simple-speak/SKILL.md"
+    },
+    {
+      "destination": "skills/sss-style/SKILL.md",
+      "mode": "0644",
+      "sha256": "3ce9aa65cf4cc31d7d0b7500ee4871e087d833c713c6b0cddecfa40d64ab666a",
+      "source": "skills/sss-style/SKILL.md"
     },
     {
       "destination": "skills/stack/SKILL.md",
@@ -790,7 +814,7 @@
     {
       "destination": "src/tasks/provider_contributions.py",
       "mode": "0644",
-      "sha256": "35b6f75484926233a8f7fd69a94938908c74aa8a98cee37048547aad193ac883",
+      "sha256": "720f7a5985ad5a84336c627a2a2d6b4a6037222391c1d42a245fa5b53408d05f",
       "source": "src/tasks/provider_contributions.py"
     },
     {

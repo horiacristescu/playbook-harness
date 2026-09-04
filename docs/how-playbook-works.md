@@ -6,8 +6,8 @@ repository. The normal interaction still begins in chat.
 ## The human describes the work
 
 The first description can be incomplete. The human may know the problem but
-not the implementation, and the agent can inspect the project, ask questions,
-and help turn the request into a bounded task.
+not the implementation, and the agent can inspect the project and ask
+questions until the request becomes a bounded task.
 
 The original conversation remains useful because it contains emphasis,
 corrections, and changes of mind that a clean specification may hide.
@@ -36,8 +36,7 @@ outcome. Hooks prevent several common mistakes, such as editing recognized code
 without an active task or skipping ahead in the gate sequence.
 
 The gates can change shape with the work. A known fix may need only a few,
-a research task may use rounds of hypothesis, evidence, and conclusion, and a
-larger implementation can alternate code changes with focused tests and
+while a larger implementation alternates code changes with tests and
 checkpoints.
 
 ## Tests stay close to the decisions
@@ -47,14 +46,14 @@ In Playbook, tests are written while the work is being done.
 A test records something the project expects to remain true, and placing it
 near the change makes the evidence available while the decision is still
 fresh. Some work needs code tests; other work needs a live run, a browser
-probe, a golden trace, a rubric, or direct human inspection. Whatever the form,
+probe, or a human looking at the result. Whatever the form,
 the purpose is the same: make the result easier to trust without asking the
 human to repeat the whole investigation.
 
 ## Review reads the result again
 
-An implementation review looks for missed intent, weak evidence, unnecessary
-complexity, and adjacent damage.
+An implementation review looks for missed intent, weak evidence, and damage
+to nearby code.
 
 The reviewer is advisory. It can find a real omission or propose something
 that does not fit the project, and the agent and human keep the responsibility
@@ -64,21 +63,20 @@ for judging its suggestions.
 
 When every gate is complete, the task is closed. Its `task.md` remains in the
 project, and it now explains more than the final diff: what was intended, what
-path was taken, what changed during the work, and what evidence supported the
-result.
+changed along the way, and what evidence supported the result.
 
-Knowledge that matters beyond one task can be moved into the project mind map,
-a test, a tool, a log, or agent guidance. The rest can stay in the task, where
+Knowledge that matters beyond one task can be moved into the mind map, a
+test, or a tool. The rest can stay in the task, where
 it is available without burdening every future session.
 
 ## The project continues
 
 The next agent starts with `pb-tasks bootstrap` rather than a blank
-conversation. It prints `MIND_MAP.md`, the pending tasks, the last chat
-messages, and the workflow the agent must follow.
+conversation. It prints `MIND_MAP.md`, the pending tasks, and the last chat
+messages.
 
-For longer or parallel work, `pb-session` gives each agent a name, a tmux pane
-you can peek at, a way to send it a message, and a route back after a reboot.
+For longer or parallel work, `pb-session` gives each agent a name and a tmux
+pane you can peek at or send a message to.
 A monitor agent can watch several such sessions while each stays focused on
 its own task. Later, `pb-tasks retro` reads across the closed tasks and the
 chat log for lessons that have not yet become a test, a tool, or a mind map
