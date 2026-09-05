@@ -755,6 +755,15 @@ def _scan_gates(task_file: Path) -> tuple[int, int, str | None, int | None]:
     return done, total, first_unchecked, first_unchecked_line
 
 
+def _is_monitor_board(task_file: Path) -> bool:
+    try:
+        from tasks.task_document import TaskDocument
+
+        return TaskDocument.parse(task_file.read_text(encoding="utf-8")).is_monitor_board
+    except (OSError, ValueError):
+        return False
+
+
 def _format_gate_echo(
     task_num: str,
     done: int,
@@ -859,14 +868,20 @@ def apply_patch_post_context(
             context = _no_active_task_echo()
         else:
             done, total, first_unchecked, gate_line = _scan_gates(task_file)
-            context = _format_gate_echo(
-                task_num,
-                done,
-                total,
-                first_unchecked,
-                task_path=task_file.relative_to(project_root).as_posix(),
-                gate_line=gate_line,
-            )
+            if _is_monitor_board(task_file):
+                context = (
+                    f"# [{task_num}] Monitor board — reconcile user intent, "
+                    f"incoming work, and lane events in task.md ({total - done} open gate(s))."
+                )
+            else:
+                context = _format_gate_echo(
+                    task_num,
+                    done,
+                    total,
+                    first_unchecked,
+                    task_path=task_file.relative_to(project_root).as_posix(),
+                    gate_line=gate_line,
+                )
 
     return {
         "hookSpecificOutput": {

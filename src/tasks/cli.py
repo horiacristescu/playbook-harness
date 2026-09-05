@@ -1442,17 +1442,24 @@ def main():
             user_why = _extract_section(task_content, "Why")
             user_refs = _extract_section(task_content, "References")
 
-            # Render full template
+            # Render the same full template path used by normal creation.
             from tasks.template import render_template
+            from tasks.core import _find_custom_playbook
             task_num_int = int(task_num)
             title = task_file.parent.name.split("-", 1)[1].replace("-", " ").title()
-            full_content = render_template(num=task_num_int, title=title, task_type=stub_type)
+            custom = _find_custom_playbook(project_path, stub_type)
+            if custom:
+                full_content = custom.read_text(encoding="utf-8")
+                full_content = full_content.replace("{{NNN}}", f"{task_num_int:03d}")
+                full_content = full_content.replace("{{TITLE}}", title)
+            else:
+                full_content = render_template(num=task_num_int, title=title, task_type=stub_type)
 
-            # F3: Append playbook role template (same as create_task)
-            from tasks.core import _load_playbook
-            role_template = _load_playbook(stub_type, project_path)
-            if role_template:
-                full_content += "\n" + role_template + "\n"
+                # Append playbook role template (same as create_task).
+                from tasks.core import _load_playbook
+                role_template = _load_playbook(stub_type, project_path)
+                if role_template:
+                    full_content += "\n" + role_template + "\n"
 
             # Inject preserved user content
             if user_intent:
@@ -1644,7 +1651,7 @@ def main():
             print(f"Next: fill in task.md gates, then run: pb-tasks work {task_num}")
         print()
 
-        if task_type != "quick":
+        if task_type not in {"quick", "monitor"}:
             # Print full playbook so agent has workflow guidance inline
             playbook_path = _find_playbook_skill(project_path)
             if playbook_path:

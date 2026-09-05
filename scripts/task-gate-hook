@@ -127,7 +127,7 @@ BLOCKED: Only `pb-tasks new` creates task.md files.
 Don't create task files manually. The CLI enforces templates and numbering.
 
 Use:  pb-tasks new <type> <name>
-Types: feature, bugfix, refactor, explore, research, review, decision, test
+Types include: feature, bugfix, refactor, cleanup, ops, audit, eval, research, monitor, quick
 MSG
             exit 2
         fi
@@ -256,7 +256,7 @@ BLOCKED: Don't create task directories manually.
 
 Use `pb-tasks new <type> <name>` to create tasks. The CLI enforces templates and numbering.
 
-Types: feature, bugfix, refactor, explore, research, review, decision, test
+Types include: feature, bugfix, refactor, cleanup, ops, audit, eval, research, monitor, quick
 MSG
         exit 2
     fi

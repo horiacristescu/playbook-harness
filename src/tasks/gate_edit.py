@@ -146,6 +146,17 @@ def validate_task_candidate(original: str, candidate: str) -> None:
             "use the lifecycle command named by the hook"
         )
 
+    if after.is_monitor_board != before.is_monitor_board:
+        raise GateEditError(
+            "ordinary task edits cannot add or remove the monitor-board mode marker"
+        )
+
+    # Monitor assignments complete according to external events, not document
+    # order. The task remains an ordinary owned task, but its body is a
+    # blackboard: any lane gate may be updated when that result actually arrives.
+    if before.is_monitor_board:
+        return
+
     checked_delta = after.progress[0] - before.progress[0]
     if checked_delta > 1:
         raise GateEditError(
@@ -181,6 +192,15 @@ def gate_closure_from_documents(
     validate_task_candidate(original, candidate)
     before = TaskDocument.parse(original)
     after = TaskDocument.parse(candidate)
+    if before.is_monitor_board:
+        if len(before.gates) != len(after.gates):
+            return None
+        closures = [
+            TaskGateClosure(current.line, prior.text, current.text)
+            for prior, current in zip(before.gates, after.gates)
+            if not prior.checked and current.checked
+        ]
+        return closures[0] if len(closures) == 1 else None
     if after.progress[0] - before.progress[0] != 1:
         return None
     first_index = next(

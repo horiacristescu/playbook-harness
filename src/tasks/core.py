@@ -89,6 +89,7 @@ PLAYBOOKS = {
     "audit": "Evaluate",
     "eval": "Evaluate",
     "research": "Investigate",
+    "monitor": "Monitor",
 }
 
 

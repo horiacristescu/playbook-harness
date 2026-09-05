@@ -795,6 +795,79 @@ def render_quick_template(num: int, title: str) -> str:
     return "\n\n".join(parts) + "\n"
 
 
+def render_monitor_template(num: int, title: str) -> str:
+    """Long-lived blackboard for intent and asynchronously completing lanes."""
+    return f"""\
+{header(num, title)}
+
+<!-- playbook-task-mode: monitor-board -->
+
+> **Monitor board:** Capture new work immediately. Dispatch from lane sections.
+> Close an assignment gate only after collection and validation; append the report.
+> Lane gates may close in the order events arrive. Keep the board useful after compaction or reboot.
+
+- Playbook: playbook/Monitor
+
+{status()}
+
+## Intent
+(what we want to achieve — the outcome, not the activity)
+
+### Goals and success criteria
+(desired outcomes and how the user will recognize success)
+
+### Constraints and decisions
+(authority, boundaries, explicit decisions, and superseded decisions)
+
+### User struggle
+(what is difficult or costly for the user; preserve their words when meaning matters)
+
+### Unresolved questions
+(questions still under discussion; do not dispatch guesses)
+
+## Why
+(why this matters now)
+
+## Incoming Work
+
+Add every new request here immediately as an open gate. Capture first; organize by priority and dependencies separately. Move or link it to a lane section when dispatched.
+
+## Watching and Recovery
+
+- [ ] Establish and verify watching: mechanism, scope, cadence, watch handle, coverage limits, and a received test event. After restart, reconcile live state, re-arm the watcher, and verify it again.
+
+Quiet is an inspection signal, not proof of a stall. Record watcher failure or lost visibility separately. A persistent objective can continue the monitoring goal; it does not provide timed wakes.
+
+## Lanes
+
+### lane-name
+
+- [ ] Capture recovery details: lane name; provider; native session ID; model; current task; resume directory.
+
+Add an assignment gate when sending work. Include outcome and constraints. Close it after collection and validation with the result, evidence, judgment, and remaining work. Corrections get new gates.
+
+## Cross-lane Work
+
+(dependencies, shared resources, ownership conflicts, and comparisons that no lane can see alone)
+
+## Intent Review
+
+(Record fresh intent reviews when useful: source messages first, then compare the plan and delivery. Triage findings; judges advise.)
+
+## Decisions and Reports
+
+(Short reports, consequential judgments, user verdicts, uncertainties, and monitor mistakes.)
+
+## End
+
+- [ ] End monitoring: reconcile intent and incoming work, collect or hand off every lane, stop or transfer watching, record recovery state, and report remaining uncertainty.
+
+## Parked
+
+(Out-of-scope discoveries with enough context to recover later.)
+"""
+
+
 # ---------------------------------------------------------------------------
 
 def render_template(num: int, title: str, task_type: str | None = None) -> str:
@@ -811,6 +884,8 @@ def render_template(num: int, title: str, task_type: str | None = None) -> str:
     # Quick template — standalone, no PLAYBOOKS lookup
     if task_type == "quick":
         return render_quick_template(num, title)
+    if task_type == "monitor":
+        return render_monitor_template(num, title)
 
     pattern_name = PLAYBOOKS.get(task_type) if task_type else None
     playbook_ref = f"playbook/{pattern_name}" if pattern_name else "(none)"

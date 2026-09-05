@@ -75,8 +75,12 @@ history; Playbook keeps the small amount of state needed to find it.
 
 ## Use a monitor for several agents
 
-A monitor is an ordinary Playbook agent whose job is to watch the other
-sessions rather than to work a task of its own.
+A monitor is an ordinary Playbook agent with a normal owned task. Create its
+blackboard with `pb-tasks new monitor <name> [intent]`. The task keeps evolving
+user intent, incoming requests, watcher recovery, and one section per lane.
+Unlike a build plan, lane assignment gates may close in the order results
+arrive. They open when work is dispatched and close after collection and
+validation with the monitor's report.
 
 Individual agents naturally focus on their current gates, while the monitor
 watches across tasks and sessions for collisions, repeated failures,
@@ -84,6 +88,11 @@ misalignment with project intent, or evidence that may disappear.
 
 The monitor uses the same `pb-session` interface as the human. It does not get
 special authority over task ownership or approvals.
+
+Live coverage also needs a wake mechanism exposed by the current provider.
+Verify a real event and record its limits on the board. Quiet is a reason to
+inspect, not proof that a lane stalled. Restore worker sessions and the watcher
+as separate steps after a restart.
 
 A healthy monitor leaves healthy work alone and steps in for cases like those:
 two agents in the same file, one agent rerunning a failing command, or work

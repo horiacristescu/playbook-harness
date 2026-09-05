@@ -1,8 +1,8 @@
 ---
 name: playbook
 description: >
-  Composable workflow patterns for task execution. Four core patterns (Build,
-  Fix, Investigate, Evaluate) plus UI Debug and structural reflection gates.
+  Composable workflow patterns for task execution. Build, Fix, Investigate,
+  Evaluate, Monitor, UI Debug, and structural reflection gates.
   Pick what fits, compose as needed. The rhythm matters more than the content.
 argument-hint: [pattern-name]
 ---
@@ -112,6 +112,12 @@ work begins.
 ---
 
 ## Patterns
+
+### Monitor
+
+Use `pb-tasks new monitor <name> [intent]` for a long-lived supervision task. Its built-in task template is the working blackboard: update user intent and incoming work continuously, add one section per lane, open assignment gates at dispatch, and close them after collection and validation. Lane events may arrive out of order, so Monitor boards retain ordinary task ownership and completion while allowing their gates to follow event order.
+
+The `$monitor` skill owns session operations and judgment. Keep those instructions out of an ordinary Build plan.
 
 ### Build
 

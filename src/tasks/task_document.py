@@ -48,6 +48,7 @@ _FENCE = re.compile(r"^[ ]{0,3}(`{3,}|~{3,})")
 _SESSION = re.compile(r"^[ \t]*-[ \t]+([a-zA-Z0-9_-]+):([^\s]+)[ \t]*(?:\r?\n)?$")
 _OPAQUE_START = "<!-- playbook-recent-chat:start -->"
 _OPAQUE_END = "<!-- playbook-recent-chat:end -->"
+MONITOR_BOARD_MARKER = "<!-- playbook-task-mode: monitor-board -->"
 _GATE = re.compile(r"^[ \t]*-[ \t]+\[([ xX])\][ \t]*(.*?)[ \t]*(?:\r?\n)?$")
 
 
@@ -107,8 +108,21 @@ class TaskDocument:
         return tuple(gates)
 
     @property
+    def is_monitor_board(self) -> bool:
+        """Return whether this ordinary task uses asynchronous monitor-board gates."""
+        return any(
+            self._semantic[index] and line.strip() == MONITOR_BOARD_MARKER
+            for index, line in enumerate(self.lines)
+        )
+
+    @property
     def head_position(self) -> str:
         """Return the first semantic open gate or empty required field."""
+        if self.is_monitor_board:
+            open_count = sum(not gate.checked for gate in self.gates)
+            if open_count:
+                return f"Monitor board — {open_count} open gate(s); inspect task.md"
+            return "(all gates checked)"
         for index, line in enumerate(self.lines):
             if not self._semantic[index]:
                 continue

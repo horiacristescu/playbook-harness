@@ -30,8 +30,12 @@ pb-tasks new --stub <type> <name> [intent]
 Create a task. A stub records the intent now and expands when work begins.
 
 Current built-in task types are `audit`, `bugfix`, `build`, `cleanup`,
-`eval`, `feature`, `ops`, `quick`, `refactor`, and `research`.
+`eval`, `feature`, `monitor`, `ops`, `quick`, `refactor`, and `research`.
 Projects may also define custom types.
+
+`monitor` creates a normal owned task whose body is a long-lived blackboard.
+Its lane gates may close in event order while other task types retain strict
+first-open-gate progression.
 
 ```bash
 pb-tasks work <N>

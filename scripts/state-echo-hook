@@ -142,6 +142,11 @@ fi
 # Count total and done checkboxes (only [ ], [x], [X] — not [8] reference links)
 TOTAL_GATES=$(grep -cE '^[[:space:]]*- \[( |x|X)\]' "$TASK_FILE" 2>/dev/null) || TOTAL_GATES=0
 DONE_GATES=$(grep -cE '^[[:space:]]*- \[[xX]\]' "$TASK_FILE" 2>/dev/null) || DONE_GATES=0
+IS_MONITOR_BOARD=false
+if sed -n '1,/^## Status[[:space:]]*$/p' "$TASK_FILE" 2>/dev/null | \
+    grep -Fxq '<!-- playbook-task-mode: monitor-board -->'; then
+    IS_MONITOR_BOARD=true
+fi
 
 # Find first unchecked gate (only at line start)
 GATE_LINE=""
@@ -184,7 +189,15 @@ REL_PATH="${TASK_FILE#$PROJECT_DIR/}"
 # gates; this post-tool observer records the successful transition once.
 TRANSITION_MSG=""
 SKIP_MSG=""
-if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" = true ]; then
+if [ "$IS_MONITOR_BOARD" = true ]; then
+    NEW_COUNT=0
+    GATE_KEY=""
+    if [ "$AGENT_WRITABLE" = true ]; then
+        write_counter "$COUNTER_FILE" gate_key ""
+        write_counter "$COUNTER_FILE" gate_count "0"
+        write_counter "$COUNTER_FILE" gate_text ""
+    fi
+elif [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" = true ]; then
     # Freehand mode: no counter increment, no repeat warning, no transition logging
     NEW_COUNT=0
     GATE_KEY="${TASK}:${GATE_LINE}"
@@ -259,7 +272,10 @@ else
 fi
 
 # --- Build output ---
-if [ "$IS_FREEHAND" = true ]; then
+if [ "$IS_MONITOR_BOARD" = true ]; then
+    OPEN_GATES=$((TOTAL_GATES - DONE_GATES))
+    CONTEXT="# [${TASK}] Monitor board — reconcile user intent, incoming work, and lane events in task.md (${OPEN_GATES} open gate(s))."
+elif [ "$IS_FREEHAND" = true ]; then
     CONTEXT="# [${TASK}] Freehand mode — wait for user instructions. Close only when user says done."
 else
     CONTEXT=$(format_context "$TASK" "$DONE_GATES" "$TOTAL_GATES" "${GATE_TEXT}" "$GATE_LINE" "$REL_PATH")
@@ -275,7 +291,7 @@ if [ -n "$BARE_MSG" ]; then
     CONTEXT="${CONTEXT}${BARE_MSG}"
 fi
 # Tool-type-aware nudge — silent on first call, silent on operate, class-specific otherwise
-if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" != true ] && [ "$NEW_COUNT" -gt 1 ]; then
+if [ -n "$GATE_LINE" ] && [ "$IS_FREEHAND" != true ] && [ "$IS_MONITOR_BOARD" != true ] && [ "$NEW_COUNT" -gt 1 ]; then
     TOOL_CLASS=$(classify_tool "$TOOL_NAME" "$INPUT")
     case "$TOOL_CLASS" in
         orient)

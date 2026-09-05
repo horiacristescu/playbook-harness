@@ -61,6 +61,13 @@ if [ "$UNCHECKED" -eq 0 ]; then
     exit 0
 fi
 
+# A monitor task is a long-lived asynchronous blackboard. Open lane gates do
+# not prevent the monitor from returning to the user between observations.
+if sed -n '1,/^## Status[[:space:]]*$/p' "$TASK_FILE" 2>/dev/null | \
+    grep -Fxq '<!-- playbook-task-mode: monitor-board -->'; then
+    exit 0
+fi
+
 # Counter-gated bypass: allow stop for conversational replies (low tool activity)
 # Missing counter file = assume work was done (block)
 COUNTER_FILE="$SESSION_DIR/counters"
