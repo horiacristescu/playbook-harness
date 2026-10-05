@@ -20,6 +20,7 @@ implementation. This adapter documents the intended Python interface for T112.
 from __future__ import annotations
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -281,8 +282,13 @@ class ClaudeAdapter(ProviderAdapter):
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _session_log_base(self) -> Optional[Path]:
-        """Compute ~/.claude/projects/<slug>/ from project root."""
-        slug = str(self._project_root).replace("/", "-")
+        """Compute ~/.claude/projects/<slug>/ from project root.
+
+        Claude Code maps every non-alphanumeric character to "-", so
+        ``chat_chrome_extension`` and ``.claude`` become ``chat-chrome-extension``
+        and ``-claude``.
+        """
+        slug = re.sub(r"[^A-Za-z0-9]", "-", str(self._project_root))
         base = Path.home() / ".claude" / "projects" / slug
         return base
 

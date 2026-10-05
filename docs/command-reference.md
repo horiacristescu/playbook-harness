@@ -47,6 +47,19 @@ Activate one task, finish the active task after all gates close, or enter
 user-directed freehand mode.
 
 ```bash
+pb-tasks resume
+pb-tasks resume <N>
+pb-tasks resume monitor
+```
+
+Bring back the agent conversation that last owned a task, for example after a
+reboot. The provider and session come from the task's `## Sessions` entry.
+With no argument it lists open tasks with their sessions and last messages.
+`monitor` resumes the one open monitor task and asks it to recover its lanes.
+`--print` shows the command instead of running it. Claude keeps saved
+conversations for 30 days by default.
+
+```bash
 pb-tasks context <N>
 pb-tasks log
 pb-tasks narrative --status

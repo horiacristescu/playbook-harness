@@ -23,6 +23,8 @@ _IDENTITY_ENV_NAMES = frozenset(
         "ANTIGRAVITY_CONVERSATION_ID",
         "PLAYBOOK_BRIDGE_PROVIDER",
         "PLAYBOOK_ROLE",
+        # A managed lane's human name belongs to that lane only.
+        "PLAYBOOK_SESSION_NAME",
     }
 )
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")

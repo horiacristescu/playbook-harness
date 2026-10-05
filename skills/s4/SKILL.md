@@ -1,9 +1,9 @@
 ---
-name: sss-style
-description: Write in synthetic, short, simple style: compress to the essential, then stop. Invoke with /sss-style to apply it to the next piece of writing, a rewrite, or as the standing style for the session. Harder compression than simple-speak, which governs dialogue replies; sss-style is for produced text where every sentence must pay for itself.
+name: s4
+description: Write in synthetic, short, simple style: compress to the essential, then stop. Invoke with /s4 to apply it to the next piece of writing, a rewrite, or as the standing style for the session. Harder compression than simple-speak, which governs dialogue replies; s4 is for produced text where every sentence must pay for itself.
 ---
 
-# SSS Style
+# s4 — Synthetic, Short, Simple Style
 
 Synthetic, short, simple.
 

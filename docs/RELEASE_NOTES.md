@@ -1,5 +1,31 @@
 # Playbook Harness release notes
 
+## Resume after a reboot, and adopt outside sessions — 2026-10-05
+
+A reboot used to leave you matching terminal tabs to conversations by hand.
+`pb-tasks resume <N>` now brings back the agent conversation that last owned
+task N, using the provider and session named in the task's `## Sessions`
+entry. With no argument it lists open tasks with their sessions and last
+messages, newest first. `pb-tasks resume monitor` resumes the one open monitor
+task and tells it to recover its lanes; the monitor skill and the Monitor task
+template now describe that recovery. `--print` shows the command instead of
+running it. Resume needs the provider's saved conversation, and Claude deletes
+conversations older than 30 days by default.
+
+`pb-session adopt` brings a session started outside tmux under managed control,
+so it can be resumed in a named lane. Adoption stays within one project.
+`pb-session resume` accepts `--prompt` for the first message after resuming,
+and inside a managed lane `$PLAYBOOK_SESSION_NAME` holds the lane's name.
+
+Two fixes. Hook scripts source `bash-log.sh` through `BASH_ENV`, and its DEBUG
+trap could return a stale failure status, which ended hooks silently and showed
+up as "hook error / No stderr output" on every tool call; every path now
+returns zero. Claude transcript lookup now maps every non-alphanumeric
+character in the project path the way Claude Code does, so projects with
+underscores or dots in their path are found.
+
+The `sss-style` writing skill is renamed `s4`.
+
 ## A humanizer skill with numbers — 2026-08-29
 
 The humanizer skill now ships in the library, so every initialized provider

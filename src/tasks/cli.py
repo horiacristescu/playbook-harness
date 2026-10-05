@@ -2331,6 +2331,49 @@ def main():
 
         sys.exit(result.returncode)
 
+    elif cmd == "resume":
+        # tasks resume [<N>|monitor] [--print]
+        # Bring back the agent conversation that last owned a task, e.g. after
+        # a reboot. No selector: list open tasks with their sessions.
+        from tasks.resume import (
+            ResumeError,
+            exec_plan,
+            list_candidates,
+            plan_resume,
+            render_candidates,
+        )
+
+        print_only = "--print" in cmd_args
+        selectors = [a for a in cmd_args if a != "--print"]
+        if len(selectors) > 1 or any(a.startswith("-") for a in selectors):
+            print("Usage: pb-tasks resume [<N>|monitor] [--print]", file=sys.stderr)
+            sys.exit(1)
+        project_path = find_project_root()
+        agent_dir = resolve_agent_dir(project_path)
+        if not selectors:
+            for line in render_candidates(list_candidates(agent_dir)):
+                print(line)
+            return
+        try:
+            plan = plan_resume(agent_dir, project_path, selectors[0])
+        except ResumeError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        if print_only:
+            print(plan.shell_line())
+            return
+        key = plan.target.key
+        print(
+            f"Resuming task {plan.target.task_number} ({key.provider}:{key.session_id}) in {plan.cwd}",
+            file=sys.stderr,
+        )
+        try:
+            exec_plan(plan, project_path)
+        except OSError as exc:
+            print(f"Error: could not start {plan.argv[0]}: {exc}", file=sys.stderr)
+            print(f"  Run it yourself: {plan.shell_line()}", file=sys.stderr)
+            sys.exit(1)
+
     elif cmd == "context":
         if not cmd_args:
             print("Error: 'context' requires a task number", file=sys.stderr)

@@ -90,7 +90,15 @@ pb-session adopt claude:<native-id> --name lane-x
 
 Have the user exit the original session before adoption. Adoption is same-project and trusts that exit; it does not prove liveness. Never guess identity from timestamps. Confirm status and visible context before steering.
 
-After reboot or exit, use `pb-session list --all` and `pb-session status NAME`. Match the saved provider and native session ID, not a reusable lane name. Resume within the user's existing authorization, preserve stopped conversations for inspection, confirm identity and model, update the recovery gate, then re-arm watching. Use `pb-session stop NAME` only with authority.
+A reboot destroys the tmux boxes but not the session records, this board, or the providers' saved conversations. The monitor usually runs outside tmux, so it comes back first. The user opens one terminal in the project and runs:
+
+```bash
+pb-tasks resume monitor
+```
+
+It resumes the conversation that owns the one open monitor task, with a recovery prompt, and refuses when several are open; `pb-tasks resume N` names the task instead. Any task's conversation comes back the same way, and `pb-tasks resume` alone lists open tasks with their sessions.
+
+Then recover the lanes with `pb-session list --all` and `pb-session status NAME`. A lane showing `recorded=running` with `observed-body=lost` lost only its box; `pb-session resume provider:native-id` puts the same conversation in a new one. Match the saved provider and native session ID, not a reusable lane name. Resume within the user's existing authorization, preserve stopped conversations for inspection, confirm identity and model, update the recovery gate, then re-arm watching. Use `pb-session stop NAME` only with authority. Inside a managed lane, `$PLAYBOOK_SESSION_NAME` holds its lane name.
 
 ## Known limits
 
@@ -99,6 +107,7 @@ After reboot or exit, use `pb-session list --all` and `pb-session status NAME`. 
 - Watch availability, timing, and restoration differ by provider and version.
 - Context exhaustion has warning signs but no reliable universal threshold.
 - Monitoring can lapse while the monitor is absorbed in implementation or a long turn.
+- Resume needs the provider's saved conversation. Claude deletes conversations older than `cleanupPeriodDays` (default 30 days).
 
 ## Report
 

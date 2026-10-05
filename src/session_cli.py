@@ -247,6 +247,10 @@ def managed_launch_environment(
             "PLAYBOOK_MANAGED_LAUNCH_TOKEN": reservation.token,
             "PLAYBOOK_MANAGED_BODY_ID": reservation.body_id,
             "PLAYBOOK_MANAGED_PROJECT_ROOT": str(project_root.resolve()),
+            # Lets the lane say who it is (e.g. "lane-a"). The session record
+            # stays the authority: a later rename is not reflected until the
+            # next resume. Empty shadows a stale tmux-server baseline.
+            "PLAYBOOK_SESSION_NAME": reservation.name or "",
         }
     )
     return result
@@ -383,6 +387,48 @@ def _session_task_authorities(
     return claims, diagnostics
 
 
+def native_resume_route(
+    record: Mapping[str, object] | None,
+    provider: str,
+    session_id: str,
+    *,
+    fallback_cwd: Path | None = None,
+    prompt: str | None = None,
+    attach: bool = False,
+) -> tuple[str, list[str]] | None:
+    """Return the cwd and argv that resume one exact native conversation.
+
+    Managed sessions go back into a tmux body through ``pb-session resume``;
+    any other session resumes in the caller's terminal with the provider's own
+    command. The recorded ``resume_cwd`` wins over ``fallback_cwd``; without
+    either there is no honest route and the result is ``None``.
+    """
+    record = record or {}
+    recorded_cwd = record.get("resume_cwd")
+    if isinstance(recorded_cwd, str) and recorded_cwd:
+        cwd = recorded_cwd
+    elif fallback_cwd is not None:
+        cwd = str(fallback_cwd)
+    else:
+        return None
+    if record.get("managed") is True:
+        argv = ["pb-session", "resume", f"{provider}:{session_id}"]
+        if attach:
+            argv.append("--attach")
+        if prompt is not None:
+            argv.extend(["--prompt", prompt])
+        return cwd, argv
+    adapter = _adapter(provider, Path(record.get("project") or cwd))
+    argv = resolve_agent_command(
+        _PROVIDER_AGENTS[provider],
+        adapter.interactive_argv(
+            prompt=BOOTSTRAP_PROMPT if prompt is None else prompt,
+            resume_session_id=session_id,
+        ),
+    )
+    return cwd, argv
+
+
 def session_status(
     agent_dir: Path,
     address: str,
@@ -513,28 +559,17 @@ def session_status(
             "the durable native identity remains resumable"
         )
 
-    resume_cwd = record.get("resume_cwd")
     resume_command = None
     if lifecycle != "destroyed":
-        if not isinstance(resume_cwd, str) or not resume_cwd:
+        route = native_resume_route(record, record["provider"], record["session_id"])
+        if route is None:
             diagnostics.append(
                 "manual resume route is incomplete: session has no recorded resume_cwd"
             )
         else:
             import shlex
 
-            qualified = f"{record['provider']}:{record['session_id']}"
-            if record.get("managed") is True:
-                resume_argv = ["pb-session", "resume", qualified]
-            else:
-                adapter = _adapter(record["provider"], Path(record.get("project") or resume_cwd))
-                resume_argv = resolve_agent_command(
-                    _PROVIDER_AGENTS[record["provider"]],
-                    adapter.interactive_argv(
-                        prompt=BOOTSTRAP_PROMPT,
-                        resume_session_id=record["session_id"],
-                    ),
-                )
+            resume_cwd, resume_argv = route
             resume_command = (
                 f"cd {shlex.quote(resume_cwd)} && {shlex.join(resume_argv)}"
             )
@@ -665,6 +700,7 @@ def _launch_reserved_session(
     sandbox: bool,
     attach: bool,
     handshake_timeout: float,
+    prompt: str | None = None,
 ) -> dict:
     adapter = _adapter(provider, project)
     environment = managed_launch_environment(
@@ -672,7 +708,7 @@ def _launch_reserved_session(
     )
     agent_name = _PROVIDER_AGENTS[provider]
     agent_args = adapter.interactive_argv(
-        prompt=BOOTSTRAP_PROMPT,
+        prompt=BOOTSTRAP_PROMPT if prompt is None else prompt,
         model=model,
         resume_session_id=resume_session_id,
     )
@@ -873,6 +909,7 @@ def resume_session(
     model: str | None = None,
     attach: bool = True,
     handshake_timeout: float = 120.0,
+    prompt: str | None = None,
 ) -> dict:
     # Preflight the optional machine dependency before reconciling or reserving
     # any durable session state. The agent can install it with user approval and
@@ -935,6 +972,114 @@ def resume_session(
         model=model,
         resume_session_id=key.session_id,
         sandbox=bool(record.get("sandbox", False)),
+        attach=attach,
+        handshake_timeout=handshake_timeout,
+        prompt=prompt,
+    )
+
+
+def adopt_session(
+    agent_dir: Path,
+    address: str,
+    *,
+    project_root: Path,
+    cwd: Path | None = None,
+    name: str | None = None,
+    model: str | None = None,
+    sandbox: bool = False,
+    attach: bool = True,
+    handshake_timeout: float = 120.0,
+) -> dict:
+    """Bring one ad_hoc session under managed control and resume it in a lane.
+
+    A session started outside ``pb-session`` leaves only an identity crumb:
+    schema, provider, session_id and created_at. It records no project, no
+    resume cwd and no managed state, so ``resume_session`` refuses it. Adoption
+    supplies exactly those missing fields and then delegates to the ordinary
+    resume path, which needs no changes to accept the completed record.
+
+    Adoption is same-project by construction: the native conversation is
+    resolved inside the caller's own agent store, never relocated between
+    projects.
+
+    The record transition is durable rather than atomic. Non-mutating checks all
+    run first, so a refused adoption leaves the record untouched. Once the
+    record is enriched, however, a later launch failure (tmux, provider
+    handshake) leaves a normal *stopped managed* session — a valid state, not a
+    corrupt one, which a plain ``pb-session resume`` retries.
+    """
+
+    # Preflight every non-mutating requirement before touching the record, so a
+    # refusal cannot leave a half-adopted session behind.
+    TmuxClient().require("pb-session")
+    project = project_root.resolve()
+    if resolve_agent_dir(project).resolve() != agent_dir.resolve():
+        raise SessionStateError(
+            "adoption is same-project: this session record belongs to a different agent store"
+        )
+    working = (cwd or project).resolve()
+    if not working.is_dir():
+        raise SessionStateError(f"adopt cwd is not a directory: {working}")
+    # The lane cwd decides which project the provider's own hooks resolve, so a
+    # foreign cwd would escape same-project adoption even with a valid record.
+    if working != project and project not in working.parents:
+        raise SessionStateError(
+            f"adopt cwd must be the project root or below it: {working}"
+        )
+    safe_name = _validate_managed_name(name)
+
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        path, record = resolve_session_record(agent_dir, address, include_destroyed=True)
+        if record.get("state") == "destroyed":
+            raise SessionStateError("destroyed session cannot be adopted")
+        if record.get("managed") is True:
+            state = record.get("state") or "unknown"
+            raise SessionStateError(
+                f"session is already managed (state={state}); use resume, not adopt"
+            )
+        provider = record["provider"]
+        unsupported = provider_support_error(provider, project)
+        if unsupported:
+            raise SessionStateError(f"managed {provider} session is unavailable: {unsupported}")
+        key = SessionKey.from_values(provider, record["session_id"])
+        assert_no_active_managed_resume(sessions, key)
+        if safe_name is not None:
+            for other_path, other in list_session_records(agent_dir):
+                if other_path != path and other.get("name") == safe_name:
+                    raise SessionStateError(f"session name is already in use: {safe_name}")
+            launches = _launches_directory(sessions)
+            for launch_path in launches.glob("*.json"):
+                launch = _validate_launch(
+                    json.loads(launch_path.read_text(encoding="utf-8")), launch_path
+                )
+                if launch.get("name") == safe_name:
+                    raise SessionStateError(f"session name is already reserved: {safe_name}")
+
+        enrich: dict[str, object] = {
+            "managed": True,
+            "state": "stopped",
+            "project": str(project),
+            "resume_cwd": str(working),
+            "sandbox": bool(sandbox),
+        }
+        if safe_name is not None:
+            enrich["name"] = safe_name
+        _adopted_path, adopted = ensure_session_record(
+            agent_dir, provider, record["session_id"], enrich=enrich, environment={}
+        )
+
+    _append_session_chronology(
+        agent_dir,
+        adopted,
+        "adopt",
+        f"adopted ad_hoc session into managed control (cwd {working})",
+        "ad_hoc",
+        "stopped",
+    )
+    return resume_session(
+        agent_dir,
+        f"{provider}:{record['session_id']}",
+        model=model,
         attach=attach,
         handshake_timeout=handshake_timeout,
     )
@@ -1099,6 +1244,28 @@ def _parser() -> argparse.ArgumentParser:
     resume.add_argument("address")
     resume.add_argument("--attach", action="store_true")
     resume.add_argument("--model")
+    resume.add_argument(
+        "--prompt",
+        help="first message for the resumed conversation (default: bootstrap, then wait)",
+    )
+    adopt = commands.add_parser(
+        "adopt",
+        help="bring an ad_hoc session under managed control and resume it in a lane",
+        description=(
+            "Adopt one session that was started outside pb-session (recorded as "
+            "ad_hoc) and resume that exact conversation in a managed tmux lane. "
+            "Same-project only: the session is resolved in this project's own "
+            "agent store. Exit the session in its original terminal first. "
+            "The transition is durable rather than atomic: refusals leave the "
+            "record untouched, but once adopted, a failed launch leaves a normal "
+            "stopped managed session that plain `pb-session resume` retries."
+        ),
+    )
+    adopt.add_argument("address")
+    adopt.add_argument("--cwd", help="working directory for the lane (default: project root)")
+    adopt.add_argument("--name", help="human lane name, e.g. lane-x")
+    adopt.add_argument("--attach", action="store_true")
+    adopt.add_argument("--model")
     stop = commands.add_parser("stop", help="stop one managed body, preserving session state")
     stop.add_argument("address")
     rename = commands.add_parser("rename", help="change only the human session name")
@@ -1208,9 +1375,25 @@ def main(argv: list[str] | None = None) -> int:
                 options.address,
                 model=options.model,
                 attach=options.attach,
+                prompt=options.prompt,
             )
             address = record.get("name") or f"{record['provider']}:{record['session_id']}"
             print(f"{address} running ({record['body_id']})")
+            return 0
+        if options.command_name == "adopt":
+            from tasks.cli import find_project_root
+            record = adopt_session(
+                _current_agent_dir(),
+                options.address,
+                project_root=find_project_root().resolve(),
+                cwd=Path(options.cwd) if options.cwd else None,
+                name=options.name,
+                model=options.model,
+                sandbox=options.sandbox,
+                attach=options.attach,
+            )
+            address = record.get("name") or f"{record['provider']}:{record['session_id']}"
+            print(f"adopted {address}")
             return 0
         if options.command_name == "stop":
             record = stop_session(_current_agent_dir(), options.address)

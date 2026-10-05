@@ -279,6 +279,17 @@ class CodexAdapter(ProviderAdapter):
 
     # ── Chat log ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def rollout_path_for(session_id: str) -> Optional[Path]:
+        """Return the rollout JSONL for one exact thread ID, if Codex still has it.
+
+        Unlike ``session_log_path`` (newest thread for a cwd), this never
+        substitutes a sibling conversation.
+        """
+        sessions = Path.home() / ".codex" / "sessions"
+        matches = sorted(sessions.glob(f"*/*/*/rollout-*-{session_id}.jsonl"))
+        return matches[-1] if matches else None
+
     def session_log_path(self) -> Optional[Path]:
         """Resolve session JSONL via SQLite state_5.sqlite.
 

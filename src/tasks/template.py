@@ -705,6 +705,9 @@ First decisions:
   new --stub <type> <name> [intent]   Create stub (expands on work)
   list [--pending|--recent] List all, open, or latest 3 tasks with status
   status              Show head position for active tasks
+  resume [<N>|monitor] [--print]
+                      Bring back the agent conversation that last owned a task
+                      (e.g. after a reboot); no argument lists open tasks
   bootstrap           Orientation: mind map, skills, tasks, recent messages, this reference
 
 Review and analysis:
@@ -837,6 +840,8 @@ Add every new request here immediately as an open gate. Capture first; organize 
 - [ ] Establish and verify watching: mechanism, scope, cadence, watch handle, coverage limits, and a received test event. After restart, reconcile live state, re-arm the watcher, and verify it again.
 
 Quiet is an inspection signal, not proof of a stall. Record watcher failure or lost visibility separately. A persistent objective can continue the monitoring goal; it does not provide timed wakes.
+
+After a reboot the user brings this monitor back with `pb-tasks resume monitor` in a fresh terminal; then recover each lane from its recovery details below.
 
 ## Lanes
 

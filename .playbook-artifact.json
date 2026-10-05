@@ -1,5 +1,5 @@
 {
-  "commit": "1b5c313113e23032ec5bf9e03a4f6b99d12a8ba9",
+  "commit": "e12c923c0d716e0eb5bc59fef232b5265a009d19",
   "files": [
     {
       "destination": "LICENSE",
@@ -286,13 +286,13 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "067cb012abc25d71ffe8bbb591137b6f35611b1d8631c6928bc5de59d1fab928",
+      "sha256": "6384c0a167652d535f4aeebde31a812c63dc240093836e010ca55347c32bc498",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
       "destination": "docs/command-reference.md",
       "mode": "0644",
-      "sha256": "f47ecf29e18bb95de2031e41c386473e28b0dfb969a6b178a6aeb33171c0be90",
+      "sha256": "2eb3dc40f30a905941c9994a8aee7b94b4b84752dabf7f270e8223bfca35a5de",
       "source": "docs/command-reference.md"
     },
     {
@@ -520,7 +520,7 @@
     {
       "destination": "skills/monitor/SKILL.md",
       "mode": "0644",
-      "sha256": "1000a6b4a8b94cc95310a27625ea101c1da6812fe3262056707c6023301de55e",
+      "sha256": "50ed252fcaf39e5a8e112caa76721e0433686f71f724647fd0c6597950d332a1",
       "source": "skills/monitor/SKILL.md"
     },
     {
@@ -566,16 +566,16 @@
       "source": "skills/playbook/ui-debug.md"
     },
     {
+      "destination": "skills/s4/SKILL.md",
+      "mode": "0644",
+      "sha256": "162b014c54ba68c99293591e94f9976b037bc6dc29d06c53f6b6307fc59d1762",
+      "source": "skills/s4/SKILL.md"
+    },
+    {
       "destination": "skills/simple-speak/SKILL.md",
       "mode": "0644",
       "sha256": "3e9059c6080410c03bdb29035c9bac72e3ba0ba111e55374362e92b83a81b00c",
       "source": "skills/simple-speak/SKILL.md"
-    },
-    {
-      "destination": "skills/sss-style/SKILL.md",
-      "mode": "0644",
-      "sha256": "3ce9aa65cf4cc31d7d0b7500ee4871e087d833c713c6b0cddecfa40d64ab666a",
-      "source": "skills/sss-style/SKILL.md"
     },
     {
       "destination": "skills/stack/SKILL.md",
@@ -628,7 +628,7 @@
     {
       "destination": "src/bash-log/bash-log.sh",
       "mode": "0644",
-      "sha256": "690bac2ba860e6d9ae14c5b1f7470580baff5815a349c0ab26d4d773eb9dde22",
+      "sha256": "4a64431071672a449a85bf884cf6bc2cebb9a09d52768f64c02eb65b0fbfd8aa",
       "source": "src/bash-log/bash-log.sh"
     },
     {
@@ -664,13 +664,13 @@
     {
       "destination": "src/provider/adapters/claude.py",
       "mode": "0644",
-      "sha256": "09b58dc0144dbf3c79adb0b4978c6d00eb88faf2713173db68db6ed79bd80297",
+      "sha256": "08005dcf0a0b497249c1e458655dfbc5c4d0f28f383912566795857b7ff7eb30",
       "source": "src/provider/adapters/claude.py"
     },
     {
       "destination": "src/provider/adapters/codex.py",
       "mode": "0644",
-      "sha256": "edf0c3faad742fa2ba2412c9a107c299d29546111d0b6a688750b4f881d2017b",
+      "sha256": "4653d1dfcf4b857319bab80fa36bafad39425d5f24a52971a0d56dcdbea5e353",
       "source": "src/provider/adapters/codex.py"
     },
     {
@@ -736,7 +736,7 @@
     {
       "destination": "src/provider/session_identity.py",
       "mode": "0644",
-      "sha256": "41922353bdc246531d9971b20a3291e9b80b39f1272fd89e1036a5de2ce93f06",
+      "sha256": "4969f3ba2d3c3a5982f4b4037812b0ab734acfff64385e4a104e6c665fe39d1b",
       "source": "src/provider/session_identity.py"
     },
     {
@@ -754,7 +754,7 @@
     {
       "destination": "src/session_cli.py",
       "mode": "0644",
-      "sha256": "77f3ffecdcb43e869e6479f629931e12548b3961c8232380a17a3876819be551",
+      "sha256": "4013eac18034e00c792d14a97741c35147e34204fbb5f527868bd492daeef05f",
       "source": "src/session_cli.py"
     },
     {
@@ -772,7 +772,7 @@
     {
       "destination": "src/tasks/cli.py",
       "mode": "0644",
-      "sha256": "d691e4562fa08fb6fdf3a5476162909b8537c16ee644a53c3d85e56dd33728f5",
+      "sha256": "ff736bf35b62c89776fc1668124a933e1a50ac0956abb53f720cc12bee49cc7f",
       "source": "src/tasks/cli.py"
     },
     {
@@ -836,6 +836,12 @@
       "source": "src/tasks/reconcile.py"
     },
     {
+      "destination": "src/tasks/resume.py",
+      "mode": "0644",
+      "sha256": "322b61c922bf4bc684d27c678216382f4874184cc21624e0668925e411f6ec21",
+      "source": "src/tasks/resume.py"
+    },
+    {
       "destination": "src/tasks/retro.py",
       "mode": "0644",
       "sha256": "d59304ab5707dcae686505c19bd671119298e6fd0c0cf5f8152a53fd956d8461",
@@ -856,7 +862,7 @@
     {
       "destination": "src/tasks/template.py",
       "mode": "0644",
-      "sha256": "0174681a1e14ca73b11b45acce5c14f616ec30c2b1ced7323c669b6bf4bfe2e1",
+      "sha256": "4769e2e85bba86f995849ac720adf75cf2e88e3208cf011dda2b203619dc202d",
       "source": "src/tasks/template.py"
     },
     {
