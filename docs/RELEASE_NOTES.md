@@ -1,5 +1,19 @@
 # Playbook Harness release notes
 
+## Managed lanes ignore a monitor's inherited identity — 2026-10-16
+
+`pb-session` now treats its explicitly selected provider as the authority for a
+new managed lane. A monitor may run as any ordinary provider session and start
+a Codex, Claude, or Agy lane even when its environment still contains another
+provider's native session ID. Launchers continue to scrub parent identity, and
+an unscoped bare nested provider still refuses genuine ambiguity rather than
+guessing.
+
+Failed lane startup also releases a claimed launch reservation after Playbook
+has positively stopped that exact tmux body. This preserves conservative crash
+recovery while avoiding a ten-minute retry lock after an ordinary handled
+failure.
+
 ## Resume after a reboot, and adopt outside sessions — 2026-10-05
 
 A reboot used to leave you matching terminal tabs to conversations by hand.

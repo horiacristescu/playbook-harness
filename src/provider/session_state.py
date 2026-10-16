@@ -382,12 +382,15 @@ def assert_no_active_managed_resume(
 def cancel_managed_launch(
     agent_dir: Path,
     reservation: ManagedLaunchReservation,
+    *,
+    body_stopped: bool = False,
 ) -> bool:
-    """Release only an unclaimed provisional capability and its name.
+    """Release this launch capability when no provider body can still use it.
 
     A claimed launch may be between native-ID claim and final-record publish;
-    deleting it would erase the only recovery witness. Missing means the hook
-    already consumed it or another cleanup won.
+    deleting it while the body runs would erase the only recovery witness. The
+    launcher may remove its exact claimed capability after it has positively
+    stopped that body. Missing means the hook consumed it or another cleanup won.
     """
 
     with sessions_root_lock(agent_dir, create=True) as sessions:
@@ -404,7 +407,9 @@ def cancel_managed_launch(
         )
         if launch["body_id"] != reservation.body_id:
             raise SessionStateError("managed launch cancellation body disagrees")
-        if launch["state"] != "reserved":
+        if launch["state"] != "reserved" and not (
+            body_stopped and launch["state"] == "claimed"
+        ):
             return False
         expected.unlink()
         directory_fd = os.open(launches, os.O_RDONLY)

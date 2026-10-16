@@ -15,12 +15,15 @@ from typing import Mapping, Optional
 
 
 NORMALIZED_SESSION_ENV = "PLAYBOOK_SESSION_ID"
+_NATIVE_COMMAND_ENVS = (
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "ANTIGRAVITY_CONVERSATION_ID",
+)
 _IDENTITY_ENV_NAMES = frozenset(
     {
         NORMALIZED_SESSION_ENV,
-        "CLAUDE_CODE_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "ANTIGRAVITY_CONVERSATION_ID",
+        *_NATIVE_COMMAND_ENVS,
         "PLAYBOOK_BRIDGE_PROVIDER",
         "PLAYBOOK_ROLE",
         # A managed lane's human name belongs to that lane only.
@@ -32,6 +35,16 @@ _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 class NativeSessionIdentityError(ValueError):
     """A provider did not supply one safe, authoritative native identity."""
+
+
+def _native_command_values(environ: Mapping[str, str]) -> dict[str, str]:
+    """Return every present native transport after validating its value."""
+
+    return {
+        name: validate_native_session_id(environ[name])
+        for name in _NATIVE_COMMAND_ENVS
+        if environ.get(name)
+    }
 
 
 @dataclass(frozen=True)
@@ -212,25 +225,13 @@ def resolve_command_session_id(
     interactive authority.
     """
 
-    native_values = {
-        name: validate_native_session_id(environ[name])
-        for name in (
-            "CLAUDE_CODE_SESSION_ID",
-            "CODEX_THREAD_ID",
-            "ANTIGRAVITY_CONVERSATION_ID",
-        )
-        if environ.get(name)
-    }
-    distinct = set(native_values.values())
-    if len(distinct) > 1:
-        raise NativeSessionIdentityError(
-            "multiple provider-native session IDs disagree"
-        )
-
     hint = provider or environ.get("PLAYBOOK_PROVIDER")
     if hint:
         spec = identity_spec(hint)
-        if not spec.command_env_is_native and native_values:
+        if spec.command_env_is_native:
+            return validate_native_session_id(environ.get(spec.command_env))
+        native_values = _native_command_values(environ)
+        if native_values:
             raise NativeSessionIdentityError(
                 "foreign provider-native session ID leaked into adapter transport"
             )
@@ -242,6 +243,14 @@ def resolve_command_session_id(
                 f"{spec.provider} normalized identity requires its declared bridge"
             )
         return validate_native_session_id(environ.get(spec.command_env))
+
+    native_values = _native_command_values(environ)
+    distinct = set(native_values.values())
+    if len(distinct) > 1:
+        raise NativeSessionIdentityError(
+            "multiple provider-native session IDs disagree; launch nested providers "
+            "with pb-claude, pb-codex, or pb-agy"
+        )
 
     if len(distinct) == 1:
         return next(iter(distinct))

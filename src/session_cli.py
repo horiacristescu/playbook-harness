@@ -794,6 +794,12 @@ def _launch_reserved_session(
                     name=reservation.body_id,
                     namespace=SESSION_TMUX_NAMESPACE,
                 )
+                # A hook may have claimed the capability immediately before a
+                # failed record publication. Once this exact body is stopped,
+                # retaining that claim only blocks a safe retry until TTL.
+                cancel_managed_launch(
+                    agent_dir, reservation, body_stopped=True
+                )
             except TmuxAgentError as cleanup_exc:
                 raise SessionStateError(
                     "managed session launch failed and its body could not be stopped: "

@@ -54,21 +54,6 @@ validate_native_session_id() {
 # adapter-normalized transport. Never invent identity from PID/cwd/recency.
 resolve_session_id() {
     local provider="${PLAYBOOK_PROVIDER:-}"
-    local found="" value="" name=""
-    for name in CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID ANTIGRAVITY_CONVERSATION_ID; do
-        eval "value=\${$name:-}"
-        [ -z "$value" ] && continue
-        validate_native_session_id "$value" || {
-            echo "Error: malformed provider-native session ID" >&2
-            return 1
-        }
-        if [ -n "$found" ] && [ "$found" != "$value" ]; then
-            echo "Error: multiple provider-native session IDs disagree" >&2
-            return 1
-        fi
-        found="$value"
-    done
-
     local candidate=""
     case "$provider" in
         claude) candidate="${CLAUDE_CODE_SESSION_ID:-}" ;;
@@ -98,6 +83,21 @@ resolve_session_id() {
         echo "$candidate"
         return
     fi
+
+    local found="" value="" name=""
+    for name in CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID ANTIGRAVITY_CONVERSATION_ID; do
+        eval "value=\${$name:-}"
+        [ -z "$value" ] && continue
+        validate_native_session_id "$value" || {
+            echo "Error: malformed provider-native session ID" >&2
+            return 1
+        }
+        if [ -n "$found" ] && [ "$found" != "$value" ]; then
+            echo "Error: multiple provider-native session IDs disagree; launch nested providers with pb-claude, pb-codex, or pb-agy" >&2
+            return 1
+        fi
+        found="$value"
+    done
 
     if [ -n "$found" ]; then
         echo "$found"
