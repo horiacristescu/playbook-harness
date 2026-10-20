@@ -1,5 +1,30 @@
 # Playbook Harness release notes
 
+## Lanes keep their shell, restore after a reboot, Codex reminder loop — 2026-10-20
+
+A managed session is now a lane: a shell in a Playbook-owned tmux window, with
+the agent typed into it. `pb-session start` returns as soon as the agent is
+typed in. When the agent exits, the shell stays. `pb-session swap NAME claude`
+saves a handoff (the last 500 screen lines and 200 chat-log lines) and starts
+another provider in the same shell, and that provider takes over the task with
+`--handoff-from`. Use `stop` to end the agent but keep the shell, and `destroy`
+to close it. `send` refuses when no agent runs in the lane, because the text
+would otherwise run as a shell command. It also refuses when the lane's agent
+changed after it last looked.
+
+`pb-session restore` lists the sessions this project recorded over the last
+ten days, with each one's task, last gates, and last messages.
+`pb-session restore <task|lane|id>` resumes one with the provider's own
+command. Short Codex IDs grow until they are unique.
+
+`pb-codex loop 5m 'MESSAGE'` sends a recurring prompt to a plain Codex
+session, for example a monitor that should check its lanes every five
+minutes. Run it with escalated permissions, because the Codex sandbox blocks
+the `codex queue` call it relies on. The loop stops when the Codex window it
+was started from closes. Without that, Codex would keep answering the prompts
+in the background with nobody watching. `pb-codex loop list` and
+`pb-codex loop stop ID` work from inside the sandbox.
+
 ## Managed lanes ignore a monitor's inherited identity — 2026-10-16
 
 `pb-session` now treats its explicitly selected provider as the authority for a

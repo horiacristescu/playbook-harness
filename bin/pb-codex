@@ -25,6 +25,11 @@ fi
 
 PROJECT_ROOT="$(find_project_root)"
 
+if [ "${1:-}" = "loop" ]; then
+    shift
+    exec python3 "$RUNTIME_ROOT/scripts/codex-loop.py" "$@"
+fi
+
 # A nested agent must not inherit the parent's provider or normalized identity.
 unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
     ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE

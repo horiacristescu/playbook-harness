@@ -8,19 +8,24 @@ capability into a Playbook-owned tmux body.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
+import tempfile
 import time
-from typing import Mapping
+from typing import Callable, Mapping
 
 from provider.session_identity import identity_spec, scrub_inherited_session_identity
 from provider.sandbox import bypass_args, wrap_command_argv
 from provider.session_state import (
+    LaneTransitionConflict,
     ManagedLaunchReservation,
+    ManagedLane,
     SessionKey,
     SessionStateError,
     _atomic_json,
@@ -30,29 +35,46 @@ from provider.session_state import (
     _validate_record,
     assert_no_active_managed_resume,
     cancel_managed_launch,
+    create_managed_lane,
     ensure_session_record,
     iter_session_directories,
+    list_managed_lanes,
+    record_lane_foreground,
     reserve_managed_launch,
+    resolve_managed_lane,
+    revoke_unclaimed_launches,
     session_directory,
     sessions_root_lock,
+    transition_managed_lane,
 )
 from tasks.core import resolve_agent_dir
 from tmux_agent import (
     TmuxClient,
     TmuxAgentError,
+    UnexpectedForegroundError,
     attach_run,
     label_run,
     peek_run,
     resolve_agent_command,
     send_message,
+    send_shell_command,
+    shell_foreground_process_groups,
     start_run,
     status_run,
+    stop_foreground_job,
     stop_run,
 )
 
 
 BOOTSTRAP_PROMPT = "Run `pb-tasks bootstrap`, then wait."
+# The user's manual swap kept the outgoing lane's last 500 lines and the last
+# 200 lines of the project chat log; a swap persists exactly that much.
+HANDOFF_LANE_LINES = 500
+HANDOFF_CHAT_LINES = 200
 SESSION_TMUX_NAMESPACE = "sessions"
+# A dispatch takes seconds (send_shell_command waits 5 s for the foreground);
+# a generation still half-dispatched after this long lost its controller.
+DISPATCH_ABANDONED_SECONDS = 60.0
 TERMINAL_BODY_STATES = {"completed", "stopped", "failed", "lost"}
 _PROVIDER_AGENTS = {
     "claude": "claude",
@@ -83,25 +105,19 @@ def _startup_attention(pane_text: str) -> str | None:
     return None
 
 
-def _detached_attention_error(
-    reservation: ManagedLaunchReservation,
-    provider: str,
-    model: str | None,
-    attention: str,
-) -> SessionStateError:
-    import shlex
+def _startup_identity_failure(pane_text: str) -> str | None:
+    """Return a provider-visible identity failure that cannot self-heal."""
 
-    command = ["pb-session"]
-    if reservation.name is not None:
-        command.extend(["--name", reservation.name])
-    command.extend(["--provider", provider])
-    if model is not None:
-        command.extend(["--model", model])
-    return SessionStateError(
-        f"provider is waiting for {attention}; detached start cannot make this "
-        "security decision. The provisional body was stopped. Review it "
-        f"interactively by rerunning without --detach: {shlex.join(command)}"
+    markers = (
+        "cannot bootstrap playbook session:",
+        "managed launch environment is incomplete:",
+        "managed launch capability is unknown or already consumed",
     )
+    for line in reversed(pane_text.splitlines()):
+        normalized = " ".join(line.casefold().split())
+        if any(marker in normalized for marker in markers):
+            return line.strip()
+    return None
 
 
 def _adapter(provider: str, project_root: Path):
@@ -256,16 +272,371 @@ def managed_launch_environment(
     return result
 
 
-def _find_body_record(agent_dir: Path, body_id: str) -> tuple[Path, dict] | None:
-    matches: list[tuple[Path, dict]] = []
-    for key, directory in iter_session_directories(agent_dir):
-        path = directory / "session.json"
-        record = json.loads(path.read_text(encoding="utf-8"))
-        if record.get("managed") is True and record.get("body_id") == body_id:
-            matches.append((path, record))
-    if len(matches) > 1:
-        raise SessionStateError(f"managed body ID is bound to multiple sessions: {body_id}")
-    return matches[0] if matches else None
+def preflight_managed_launch_environment(
+    environment: Mapping[str, str],
+    *,
+    provider: str,
+    reservation: ManagedLaunchReservation,
+) -> None:
+    """Reject a malformed child boundary before creating a tmux body."""
+
+    canonical = identity_spec(provider).provider
+    expected = {
+        "PLAYBOOK_PROVIDER": canonical,
+        "PLAYBOOK_MANAGED_LAUNCH_TOKEN": reservation.token,
+        "PLAYBOOK_MANAGED_BODY_ID": reservation.body_id,
+    }
+    disagreements = [
+        f"{name}={environment.get(name)!r} (expected {value!r})"
+        for name, value in expected.items()
+        if environment.get(name) != value
+    ]
+    inherited = [
+        name
+        for name in (
+            "PLAYBOOK_SESSION_ID",
+            "PLAYBOOK_BRIDGE_PROVIDER",
+            "CLAUDE_CODE_SESSION_ID",
+            "CODEX_THREAD_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
+        )
+        if environment.get(name)
+    ]
+    if disagreements or inherited:
+        details = disagreements
+        if inherited:
+            details.append("unscrubbed identity transports: " + ", ".join(inherited))
+        raise SessionStateError(
+            "managed launch environment preflight failed: " + "; ".join(details)
+        )
+
+
+def managed_shell_environment(
+    project_root: Path, inherited: Mapping[str, str]
+) -> dict[str, str]:
+    """Build a durable shell environment containing no provider capability."""
+
+    result = scrub_inherited_session_identity(inherited)
+    runtime_bin = Path(__file__).resolve().parent.parent / "bin"
+    inherited_path = result.get("PATH")
+    result["PATH"] = (
+        f"{runtime_bin}{os.pathsep}{inherited_path}"
+        if inherited_path
+        else str(runtime_bin)
+    )
+    for key in (
+        "PLAYBOOK_MANAGED_LAUNCH_TOKEN",
+        "PLAYBOOK_MANAGED_BODY_ID",
+        "PLAYBOOK_MANAGED_PROJECT_ROOT",
+        "PLAYBOOK_PROVIDER",
+        "PLAYBOOK_SESSION_ID",
+        "PLAYBOOK_BRIDGE_PROVIDER",
+        "CLAUDE_CODE_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "ANTIGRAVITY_CONVERSATION_ID",
+    ):
+        result[key] = ""
+    result["PLAYBOOK_PROJECT_ROOT"] = str(project_root.resolve())
+    return result
+
+
+def create_managed_lane_body(
+    *,
+    agent_dir: Path,
+    project: Path,
+    cwd: Path,
+    name: str | None,
+    body_id: str | None = None,
+    attach: bool = False,
+) -> ManagedLane:
+    """Create a durable shell lane and return after shell foreground readiness."""
+
+    lane = create_managed_lane(
+        agent_dir,
+        project_root=project,
+        name=name,
+        cwd=cwd,
+        body_id=body_id,
+    )
+    shell = Path(os.environ.get("SHELL", "/bin/zsh"))
+    if not shell.is_absolute() or shell.name not in {"bash", "zsh"} or not shell.is_file():
+        shell = Path("/bin/zsh" if Path("/bin/zsh").is_file() else "/bin/bash")
+    shell_args = ["-f"] if shell.name == "zsh" else ["--noprofile", "--norc"]
+    try:
+        start_run(
+            name=lane.record["body_id"],
+            namespace=SESSION_TMUX_NAMESPACE,
+            agent="command",
+            agent_args=[str(shell), *shell_args],
+            cwd=cwd,
+            environment=managed_shell_environment(project, os.environ),
+            model=None,
+        )
+        lane = transition_managed_lane(
+            agent_dir,
+            lane.record["body_id"],
+            expected_state="provisional",
+            state="shell_idle",
+        )
+        if name is not None:
+            label_run(
+                name=lane.record["body_id"],
+                namespace=SESSION_TMUX_NAMESPACE,
+                label=name,
+            )
+        if attach:
+            result = attach_run(
+                name=lane.record["body_id"], namespace=SESSION_TMUX_NAMESPACE
+            )
+            if result != 0:
+                raise SessionStateError(f"tmux attach exited with status {result}")
+        return lane
+    except BaseException:
+        try:
+            stop_run(name=lane.record["body_id"], namespace=SESSION_TMUX_NAMESPACE)
+        except TmuxAgentError:
+            pass
+        try:
+            transition_managed_lane(
+                agent_dir,
+                lane.record["body_id"],
+                expected_state=lane.record["state"],
+                state="destroyed",
+            )
+        except SessionStateError:
+            pass
+        raise
+
+
+def dispatch_provider_generation(
+    *,
+    agent_dir: Path,
+    lane_address: str,
+    provider: str,
+    model: str | None = None,
+    sandbox: bool = False,
+    resume_session_id: str | None = None,
+    prompt: str | None = None,
+) -> tuple[ManagedLane, ManagedLaunchReservation]:
+    """Reserve and dispatch one provider generation into an idle shell lane."""
+
+    lane = resolve_managed_lane(agent_dir, lane_address)
+    if lane.record["state"] not in {"shell_idle", "provider_exited"}:
+        raise SessionStateError(
+            f"managed lane {lane_address} is not idle: {lane.record['state']}"
+        )
+    # A resumed record keeps its own name (the bind refuses a silent rename);
+    # a new conversation carries none, since its lane holds the name.
+    record_name = None
+    if resume_session_id is not None:
+        _path, existing = resolve_session_record(
+            agent_dir, f"{provider}:{resume_session_id}"
+        )
+        record_name = existing.get("name")
+    lane = transition_managed_lane(
+        agent_dir,
+        lane.record["body_id"],
+        expected_state=lane.record["state"],
+        state="launch_reserved" if lane.record["generation"] == 0 else "relaunching",
+        launch_provider=provider,
+        advance_generation=True,
+    )
+    reservation: ManagedLaunchReservation | None = None
+    script_path: Path | None = None
+    dispatch_attempted = False
+    try:
+        reservation = reserve_managed_launch(
+            agent_dir,
+            project_root=Path(lane.record["project"]),
+            provider=provider,
+            name=record_name,
+            cwd=Path(lane.record["cwd"]),
+            body_id=lane.record["body_id"],
+            model=model,
+            sandbox=sandbox,
+            operation="resume" if resume_session_id is not None else "new",
+            expected_key=(
+                SessionKey.from_values(provider, resume_session_id)
+                if resume_session_id is not None
+                else None
+            ),
+        )
+        adapter = _adapter(provider, Path(lane.record["project"]))
+        argv = resolve_agent_command(
+            _PROVIDER_AGENTS[provider],
+            adapter.interactive_argv(
+                prompt=BOOTSTRAP_PROMPT if prompt is None else prompt,
+                model=model,
+                resume_session_id=resume_session_id,
+            ),
+        )
+        if sandbox:
+            permission_args = (
+                bypass_args(argv[0]) if Path(argv[0]).name in {"claude", "codex", "agy", "pi"} else []
+            )
+            argv = wrap_command_argv([argv[0], *permission_args, *argv[1:]], Path(lane.record["project"]))
+        generation_environment = managed_launch_environment(
+            reservation,
+            Path(lane.record["project"]),
+            provider,
+            {},
+        )
+        preflight_managed_launch_environment(
+            generation_environment, provider=provider, reservation=reservation
+        )
+        # PATH is the shell's own (runtime bin first, then the caller's
+        # PATH); the generation environment is built without a parent, so
+        # its PATH would hold only the runtime bin.
+        injected = {
+            key: generation_environment[key]
+            for key in (
+                "PLAYBOOK_PROVIDER",
+                "PLAYBOOK_PROJECT_ROOT",
+                "PLAYBOOK_MANAGED_LAUNCH_TOKEN",
+                "PLAYBOOK_MANAGED_BODY_ID",
+                "PLAYBOOK_MANAGED_PROJECT_ROOT",
+                "PLAYBOOK_SESSION_NAME",
+            )
+        }
+        # The agent learns which lane it is in ("you are lane-a").
+        injected["PLAYBOOK_SESSION_NAME"] = lane.record["name"] or record_name or ""
+        if sandbox:
+            injected["PLAYBOOK_SANDBOXED"] = "1"
+        command = [
+            "env",
+            "-u", "PLAYBOOK_SESSION_ID",
+            "-u", "PLAYBOOK_BRIDGE_PROVIDER",
+            "-u", "CLAUDE_CODE_SESSION_ID",
+            "-u", "CODEX_THREAD_ID",
+            "-u", "ANTIGRAVITY_CONVERSATION_ID",
+            *(f"{key}={value}" for key, value in injected.items()),
+            *argv,
+        ]
+        script_path = _launcher_path(lane)
+        commands_dir = script_path.parent
+        if commands_dir.is_symlink():
+            raise SessionStateError("managed lane commands directory may not be a symlink")
+        commands_dir.mkdir(mode=0o700, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{lane.record['body_id']}-g{lane.record['generation']}.",
+            suffix=".tmp",
+            dir=commands_dir,
+        )
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write("#!/bin/sh\n")
+                stream.write(f"rm -f -- {shlex.quote(str(script_path))}\n")
+                stream.write(f"exec {shlex.join(command)}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, script_path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        dispatch_attempted = True
+        foreground = send_shell_command(
+            name=lane.record["body_id"],
+            namespace=SESSION_TMUX_NAMESPACE,
+            command=shlex.join(["/bin/sh", str(script_path)]),
+        )
+        # The provider's hook may bind before this lands; that keeps its identity.
+        lane = record_lane_foreground(
+            agent_dir,
+            lane.record["body_id"],
+            generation=lane.record["generation"],
+            foreground_process_group=foreground,
+        )
+        return lane, reservation
+    except BaseException as exc:
+        # A busy shell is refused before anything is typed.
+        typed = dispatch_attempted and not isinstance(exc, UnexpectedForegroundError)
+        if typed:
+            try:
+                recover_lane_dispatch(agent_dir, lane)
+            except (SessionStateError, TmuxAgentError, OSError):
+                pass  # `settle_lane` retries once the dispatch is stale.
+            raise
+        if script_path is not None:
+            script_path.unlink(missing_ok=True)
+        if reservation is not None:
+            cancel_managed_launch(agent_dir, reservation)
+        try:
+            transition_managed_lane(
+                agent_dir,
+                lane.record["body_id"],
+                expected_state=lane.record["state"],
+                state="shell_idle",
+            )
+        except SessionStateError:
+            pass
+        raise
+
+
+def _dispatch_abandoned(record: Mapping[str, object]) -> bool:
+    """Whether a generation stayed half-dispatched far longer than a dispatch takes."""
+
+    starting = record["state"] in {"launch_reserved", "relaunching"} or (
+        record["state"] == "provider_running" and record["foreground_process_group"] is None
+    )
+    if not starting:
+        return False
+    since = datetime.fromisoformat(str(record["updated_at"]).replace("Z", "+00:00"))
+    return (datetime.now(timezone.utc) - since).total_seconds() > DISPATCH_ABANDONED_SECONDS
+
+
+def _launcher_path(lane: ManagedLane) -> Path:
+    record = lane.record
+    return lane.path.parent / ".commands" / f"{record['body_id']}-g{record['generation']}.sh"
+
+
+def recover_lane_dispatch(agent_dir: Path, lane: ManagedLane) -> ManagedLane:
+    """Settle a generation whose launcher may or may not have been typed.
+
+    The launcher deletes itself before anything else, so removing it here
+    decides: if it was still there, it never ran and now never can. If it
+    was gone, it ran, and the shell's foreground says whether the agent
+    still runs.
+    """
+
+    body_id = str(lane.record["body_id"])
+    generation = lane.record["generation"]
+    try:
+        _launcher_path(lane).unlink()
+        ran = False
+    except FileNotFoundError:
+        ran = True
+    if ran:
+        shell_group, foreground = shell_foreground_process_groups(
+            name=body_id, namespace=SESSION_TMUX_NAMESPACE
+        )
+        if foreground != shell_group:
+            return record_lane_foreground(
+                agent_dir, body_id, generation=generation, foreground_process_group=foreground
+            )
+    # No process of this generation remains to present its token.
+    revoke_unclaimed_launches(agent_dir, body_id)
+    current = resolve_managed_lane(agent_dir, body_id)
+    if current.record["generation"] != generation or current.record["state"] not in {
+        "launch_reserved",
+        "relaunching",
+        "provider_running",
+    }:
+        return current
+    if not ran:
+        return transition_managed_lane(
+            agent_dir,
+            body_id,
+            expected_state=current.record["state"],
+            expected_generation=generation,
+            state="shell_idle",
+        )
+    current = _lane_exited(agent_dir, current)
+    _mark_lane_session_stopped(agent_dir, current, "natural")
+    return current
 
 
 def list_session_records(
@@ -429,7 +800,7 @@ def native_resume_route(
     return cwd, argv
 
 
-def session_status(
+def _native_status(
     agent_dir: Path,
     address: str,
     *,
@@ -605,32 +976,238 @@ def session_status(
     }
 
 
-def _managed_body(agent_dir: Path, address: str) -> tuple[Path, dict, str]:
-    path, record = resolve_session_record(agent_dir, address)
+_LANE_LIFECYCLE = {
+    "provisional": "starting",
+    "shell_idle": "shell",
+    "launch_reserved": "starting",
+    "relaunching": "starting",
+    "provider_running": "starting",
+    "provider_exited": "shell",
+    "destroyed": "destroyed",
+}
+
+
+def _lane_summary(
+    lane: ManagedLane, *, current: bool, observe_body: bool
+) -> dict[str, object]:
+    record = lane.record
+    attention = None
+    if observe_body and record["state"] == "provider_running" and record["session_id"] is None:
+        # An agent that has not bound yet may be waiting on a screen only a
+        # person can answer, or may have failed in a way that cannot heal.
+        try:
+            pane = peek_run(
+                name=str(record["body_id"]), namespace=SESSION_TMUX_NAMESPACE, lines=80
+            )
+        except (TmuxAgentError, OSError):
+            pane = ""
+        attention = _startup_identity_failure(pane) or _startup_attention(pane)
+    return {
+        "name": record["name"],
+        "body_id": record["body_id"],
+        "state": record["state"],
+        "generation": record["generation"],
+        "agent": record["launch_provider"],
+        "bound": record["session_id"] is not None,
+        "current": current,
+        "attention": attention,
+    }
+
+
+def _unbound_lane_status(lane: ManagedLane, *, observe_body: bool) -> dict:
+    record = lane.record
+    body_state, body_error = "unobserved", None
+    if observe_body:
+        try:
+            body_state = status_run(
+                name=str(record["body_id"]), namespace=SESSION_TMUX_NAMESPACE
+            ).get("state", "unknown")
+        except TmuxAgentError as exc:
+            body_state, body_error = "unavailable", str(exc)
+    return {
+        "address": _lane_label(record),
+        "provider": record["launch_provider"],
+        "session_id": None,
+        "name": record["name"],
+        "managed": True,
+        "lifecycle_state": _LANE_LIFECYCLE[record["state"]],
+        "body_id": record["body_id"],
+        "body_state": body_state,
+        "body_exit_status": None,
+        "body_error": body_error,
+        "task": None,
+        "recorded_lifecycle": {
+            "state": _LANE_LIFECYCLE[record["state"]],
+            "at": record["updated_at"],
+        },
+        "observed_body": {"state": body_state, "exit_status": None, "error": body_error},
+        "current_task": None,
+        "current_gate": None,
+        "latest_recorded_task": None,
+        "latest_recorded_activity": None,
+        "chronology_complete": False,
+        "chronology_note": "no conversation has bound in this lane yet",
+        "resume_command": None,
+        "diagnostics": [],
+        "sandbox": False,
+        "tmux_session": None,
+        "tmux_pane": None,
+        "resume_cwd": record["cwd"],
+    }
+
+
+def session_status(
+    agent_dir: Path,
+    address: str,
+    *,
+    include_destroyed: bool = False,
+    observe_body: bool = True,
+) -> dict:
+    """Orientation for one lane or one conversation.
+
+    A lane name answers with the conversation it runs or last ran, plus a
+    `lane` block; a native key answers for that conversation, with the lane
+    it last ran in.
+    """
+
+    lane = _lane_or_none(agent_dir, address, include_destroyed=include_destroyed)
+    if lane is not None:
+        if observe_body:
+            lane = settle_lane(agent_dir, lane)
+        key = _lane_key(lane.record)
+        value = None
+        if key is not None:
+            try:
+                value = _native_status(
+                    agent_dir,
+                    f"{key.provider}:{key.session_id}",
+                    include_destroyed=True,
+                    observe_body=observe_body,
+                )
+            except SessionStateError:
+                value = None
+        if value is None:
+            value = _unbound_lane_status(lane, observe_body=observe_body)
+        value["address"] = _lane_label(lane.record)
+        value["lane"] = _lane_summary(lane, current=True, observe_body=observe_body)
+        return value
+    value = _native_status(
+        agent_dir, address, include_destroyed=include_destroyed, observe_body=observe_body
+    )
+    _path, record = resolve_session_record(agent_dir, address, include_destroyed=True)
+    owner = _lane_of_record(agent_dir, record)
+    if owner is not None:
+        key = SessionKey.from_values(record["provider"], record["session_id"])
+        current = owner.record["state"] != "destroyed" and _lane_key(owner.record) == key
+        if current:
+            value["address"] = _lane_label(owner.record)
+        if not (current and owner.record["state"] == "provider_running"):
+            # The lane's shell may be alive, but not as this conversation.
+            value["body_state"] = "none"
+            value["body_exit_status"] = None
+            value["observed_body"] = {"state": "none", "exit_status": None, "error": None}
+        value["lane"] = _lane_summary(owner, current=current, observe_body=False)
+    return value
+
+
+def list_session_status(agent_dir: Path, *, include_destroyed: bool = False) -> list[dict]:
+    """Every conversation record, then every live lane that has none."""
+
+    lanes = [settle_lane(agent_dir, lane) for lane in list_managed_lanes(agent_dir)]
+    values = [
+        session_status(
+            agent_dir,
+            f"{record['provider']}:{record['session_id']}",
+            include_destroyed=include_destroyed,
+        )
+        for _path, record in list_session_records(
+            agent_dir, include_destroyed=include_destroyed
+        )
+    ]
+    listed = {(value["provider"], value["session_id"]) for value in values}
+    for lane in lanes:
+        if lane.record["state"] == "destroyed":
+            continue
+        key = _lane_key(lane.record)
+        if key is not None and (key.provider, key.session_id) in listed:
+            continue
+        values.append(session_status(agent_dir, str(lane.record["body_id"])))
+    return values
+
+
+def _managed_body(
+    agent_dir: Path, address: str
+) -> tuple[ManagedLane | None, str]:
+    """The tmux body an address names, with its lane when it has one.
+
+    A conversation's key names its lane only while that lane still holds it;
+    once the lane has moved on to another agent the key no longer reaches it.
+    """
+
+    lane = _lane_or_none(agent_dir, address)
+    if lane is not None:
+        return lane, str(lane.record["body_id"])
+    _path, record = resolve_session_record(agent_dir, address)
     body_id = record.get("body_id")
     if record.get("managed") is not True or not body_id:
         raise SessionStateError(f"session has no managed tmux body: {address}")
-    return path, record, body_id
+    lane = _lane_of_record(agent_dir, record)
+    if lane is None:
+        return None, body_id  # launched before lanes: the body is the agent
+    key = SessionKey.from_values(record["provider"], record["session_id"])
+    label = _lane_label(lane.record)
+    if lane.record["state"] == "destroyed":
+        raise SessionStateError(
+            f"lane {label} is closed; `pb-session resume {address}` reopens the conversation"
+        )
+    holder = _lane_key(lane.record)
+    if holder != key:
+        raise SessionStateError(
+            f"lane {label} has moved on to "
+            f"{f'{holder.provider}:{holder.session_id}' if holder else 'another agent'}; "
+            f"address the lane as `{label}`, or `pb-session resume {address}`"
+        )
+    return lane, body_id
 
 
 def attach_session(agent_dir: Path, address: str) -> int:
-    _path, _record, body_id = _managed_body(agent_dir, address)
+    _lane, body_id = _managed_body(agent_dir, address)
     return attach_run(name=body_id, namespace=SESSION_TMUX_NAMESPACE)
 
 
 def peek_session(agent_dir: Path, address: str, *, lines: int = 50) -> str:
-    _path, _record, body_id = _managed_body(agent_dir, address)
+    _lane, body_id = _managed_body(agent_dir, address)
     return peek_run(name=body_id, namespace=SESSION_TMUX_NAMESPACE, lines=lines)
 
 
 def send_session(agent_dir: Path, address: str, message: str, *, enter: bool = True) -> None:
-    _path, _record, body_id = _managed_body(agent_dir, address)
-    send_message(
-        name=body_id,
-        namespace=SESSION_TMUX_NAMESPACE,
-        message=message,
-        enter=enter,
-    )
+    lane, body_id = _managed_body(agent_dir, address)
+    expected_foreground = None
+    if lane is not None:
+        lane = settle_lane(agent_dir, lane)
+        label = _lane_label(lane.record)
+        expected_foreground = lane.record["foreground_process_group"]
+        if lane.record["state"] != "provider_running" or expected_foreground is None:
+            # With no agent in the foreground the text would reach the shell
+            # and run as a command.
+            raise SessionStateError(
+                f"lane {label} has no agent running ({lane.record['state']}); "
+                f"`pb-session attach {label}` to use its shell"
+            )
+    try:
+        send_message(
+            name=body_id,
+            namespace=SESSION_TMUX_NAMESPACE,
+            message=message,
+            enter=enter,
+            expected_foreground=expected_foreground,
+        )
+    except UnexpectedForegroundError:
+        # The agent exited, or a swap replaced it, after the lane was read.
+        raise SessionStateError(
+            f"lane {label} changed its foreground job before the send; nothing was "
+            f"sent. Check `pb-session status {label}` and send again"
+        ) from None
 
 
 def _now() -> str:
@@ -688,171 +1265,507 @@ def _append_session_chronology(
     return True
 
 
-def _launch_reserved_session(
-    *,
-    agent_dir: Path,
-    project: Path,
-    cwd: Path,
-    provider: str,
-    reservation: ManagedLaunchReservation,
-    model: str | None,
-    resume_session_id: str | None,
-    sandbox: bool,
-    attach: bool,
-    handshake_timeout: float,
-    prompt: str | None = None,
-) -> dict:
-    adapter = _adapter(provider, project)
-    environment = managed_launch_environment(
-        reservation, project, provider, os.environ
+def reconcile_lane_binding(agent_dir: Path, lane_address: str) -> dict | None:
+    """Idempotently project a hook-finalized lane bind into session metadata/log."""
+
+    lane = resolve_managed_lane(agent_dir, lane_address).record
+    provider = lane.get("provider")
+    session_id = lane.get("session_id")
+    if not isinstance(provider, str) or not isinstance(session_id, str):
+        return None
+    body = status_run(
+        name=str(lane["body_id"]), namespace=SESSION_TMUX_NAMESPACE
     )
-    agent_name = _PROVIDER_AGENTS[provider]
-    agent_args = adapter.interactive_argv(
-        prompt=BOOTSTRAP_PROMPT if prompt is None else prompt,
-        model=model,
-        resume_session_id=resume_session_id,
+    enrich: dict[str, object] = {}
+    if isinstance(body.get("tmux_session"), str):
+        enrich["tmux_session"] = body["tmux_session"]
+    if isinstance(body.get("pane_id"), str):
+        enrich["tmux_pane"] = body["pane_id"]
+    _path, record = ensure_session_record(
+        agent_dir, provider, session_id, enrich=enrich, environment={}
     )
-    if sandbox:
-        exact_command = resolve_agent_command(agent_name, agent_args)
-        permission_args = (
-            bypass_args(agent_name)
-            if agent_name in {"claude", "codex", "agy", "pi"}
-            else []
-        )
-        exact_command = [exact_command[0], *permission_args, *exact_command[1:]]
-        agent_name = "command"
-        agent_args = wrap_command_argv(exact_command, project)
-        environment["PLAYBOOK_SANDBOXED"] = "1"
-    metadata: dict | None = None
-    try:
-        metadata = start_run(
-            name=reservation.body_id,
-            namespace=SESSION_TMUX_NAMESPACE,
-            agent=agent_name,
-            agent_args=agent_args,
-            cwd=cwd,
-            environment=environment,
-            model=None,
-        )
-        if reservation.name is not None:
-            label_run(
-                name=reservation.body_id,
-                namespace=SESSION_TMUX_NAMESPACE,
-                label=reservation.name,
-            )
-        deadline = time.monotonic() + handshake_timeout
-        bound = _find_body_record(agent_dir, reservation.body_id)
-        attached_attention: set[str] = set()
-        did_attach = False
-        while bound is None and time.monotonic() < deadline:
-            body = status_run(
-                name=reservation.body_id,
-                namespace=SESSION_TMUX_NAMESPACE,
-            )
-            if body.get("state") in TERMINAL_BODY_STATES:
-                raise SessionStateError(
-                    "provider body terminated before native identity binding: "
-                    f"body={reservation.body_id} state={body.get('state')} "
-                    f"exit={body.get('exit_status')}"
-                )
-            try:
-                pane_text = peek_run(
-                    name=reservation.body_id,
-                    namespace=SESSION_TMUX_NAMESPACE,
-                    lines=80,
-                )
-            except (TmuxAgentError, OSError):
-                pane_text = ""
-            attention = _startup_attention(pane_text)
-            if attention is not None and attention not in attached_attention:
-                if not attach:
-                    raise _detached_attention_error(
-                        reservation, provider, model, attention
-                    )
-                attached_attention.add(attention)
-                result = attach_run(
-                    name=reservation.body_id,
-                    namespace=SESSION_TMUX_NAMESPACE,
-                )
-                did_attach = True
-                if result != 0:
-                    raise SessionStateError(
-                        f"tmux attach for {attention} exited with status {result}"
-                    )
-            time.sleep(0.05)
-            bound = _find_body_record(agent_dir, reservation.body_id)
-        if bound is None:
-            raise SessionStateError(
-                "provider started but did not bind its native session ID before the "
-                f"{handshake_timeout:g}s handshake deadline; body={reservation.body_id}"
-            )
-    except BaseException as exc:
-        cancel_managed_launch(agent_dir, reservation)
-        if metadata is not None:
-            try:
-                stop_run(
-                    name=reservation.body_id,
-                    namespace=SESSION_TMUX_NAMESPACE,
-                )
-                # A hook may have claimed the capability immediately before a
-                # failed record publication. Once this exact body is stopped,
-                # retaining that claim only blocks a safe retry until TTL.
-                cancel_managed_launch(
-                    agent_dir, reservation, body_stopped=True
-                )
-            except TmuxAgentError as cleanup_exc:
-                raise SessionStateError(
-                    "managed session launch failed and its body could not be stopped: "
-                    f"body={reservation.body_id}; cleanup={cleanup_exc}"
-                ) from exc
-        if isinstance(exc, KeyboardInterrupt):
-            raise SessionStateError(
-                f"managed session start interrupted; body={reservation.body_id} stopped"
-            ) from None
-        raise
-    path, record = bound
-    record_path, record = ensure_session_record(
-        agent_dir,
-        record["provider"],
-        record["session_id"],
-        enrich={
-            "tmux_session": metadata.get("tmux_session"),
-            "tmux_pane": metadata.get("pane_id"),
-        },
-        environment={},
-    )
-    assert record_path == path
+    lane_name = lane.get("name") or lane["body_id"]
     _append_session_chronology(
         agent_dir,
         record,
         "bind",
-        f"bound managed body {reservation.body_id} to native session",
-        reservation.body_id,
+        f"bound lane {lane_name} generation {lane['generation']} to native session",
+        lane["body_id"],
+        lane["generation"],
         timestamp_field="last_started_at",
     )
-    operation = "resume" if resume_session_id is not None else "start"
+    # A new launch creates its record as it binds; a record that already
+    # existed before this generation bound is a conversation being resumed.
+    resumed = isinstance(lane.get("last_bound_at"), str) and str(
+        record.get("created_at", "")
+    ) < lane["last_bound_at"]
     _append_session_chronology(
         agent_dir,
         record,
-        operation,
-        f"started managed session body {reservation.body_id}"
-        if operation == "start"
-        else f"resumed managed session body {reservation.body_id}",
-        reservation.body_id,
+        "resume" if resumed else "start",
+        f"{'resumed' if resumed else 'started'} provider generation "
+        f"{lane['generation']} in lane {lane_name}",
+        lane["body_id"],
+        lane["generation"],
         timestamp_field="last_started_at",
     )
-    if attach and not did_attach:
-        result = attach_run(
-            name=reservation.body_id,
-            namespace=SESSION_TMUX_NAMESPACE,
-        )
-        if result != 0:
-            raise SessionStateError(f"tmux attach exited with status {result}")
     return record
 
 
-def stop_session(agent_dir: Path, address: str) -> dict:
-    path, record, body_id = _managed_body(agent_dir, address)
+def reconcile_lane_runtime(agent_dir: Path, lane_address: str) -> ManagedLane:
+    """Converge a running generation after its foreground provider exits."""
+
+    lane = resolve_managed_lane(agent_dir, lane_address)
+    if lane.record["state"] != "provider_running":
+        return lane
+    shell_group, foreground = shell_foreground_process_groups(
+        name=str(lane.record["body_id"]), namespace=SESSION_TMUX_NAMESPACE
+    )
+    if foreground != shell_group:
+        return lane
+    return _lane_exited(agent_dir, lane)
+
+
+def _lane_exited(agent_dir: Path, lane: ManagedLane, *, state: str = "provider_exited") -> ManagedLane:
+    # Keep the last bound conversation: `resume <lane>` and `swap` read it.
+    record = lane.record
+    return transition_managed_lane(
+        agent_dir,
+        str(record["body_id"]),
+        expected_state=str(record["state"]),
+        expected_generation=record["generation"],
+        state=state,
+        provider=record["provider"],
+        session_id=record["session_id"],
+        launch_provider=record["launch_provider"],
+        last_bound_at=record["last_bound_at"],
+    )
+
+
+def _lane_key(record: Mapping[str, object]) -> SessionKey | None:
+    if record.get("provider") is None:
+        return None
+    return SessionKey.from_values(record["provider"], record["session_id"])
+
+
+def _lane_label(record: Mapping[str, object]) -> str:
+    return str(record.get("name") or record["body_id"])
+
+
+def _mark_lane_session_stopped(agent_dir: Path, lane: ManagedLane, how: str) -> None:
+    """Record that the lane's bound conversation is no longer running there."""
+
+    key = _lane_key(lane.record)
+    if key is None:
+        return
+    try:
+        _path, record = resolve_session_record(agent_dir, f"{key.provider}:{key.session_id}")
+    except SessionStateError:
+        return
+    body_id = lane.record["body_id"]
+    if record.get("state") != "running" or record.get("body_id") != body_id:
+        return
+    _path, stopped = ensure_session_record(
+        agent_dir,
+        key.provider,
+        key.session_id,
+        enrich={"state": "stopped", "stopped_at": _now()},
+        expected={"state": "running", "body_id": body_id},
+        environment={},
+    )
+    verb = "stopped" if how == "explicit" else "ended"
+    _append_session_chronology(
+        agent_dir,
+        stopped,
+        "stop",
+        f"{verb} generation {lane.record['generation']} in lane {_lane_label(lane.record)}",
+        body_id,
+        lane.record["generation"],
+        how,
+        timestamp_field="stopped_at",
+    )
+
+
+def settle_lane(agent_dir: Path, lane: ManagedLane) -> ManagedLane:
+    """Bring a lane record in line with what its tmux body shows now.
+
+    A body that ended (after a reboot, or a killed tmux server) destroys the
+    lane but keeps its last conversation; a provider that returned control
+    to the shell makes the lane idle. Unobservable bodies change nothing.
+    """
+
+    try:
+        return _settle_lane_once(agent_dir, lane)
+    except LaneTransitionConflict:
+        # Another controller settled or relaunched it between our look and write.
+        return resolve_managed_lane(agent_dir, str(lane.record["body_id"]))
+
+
+def _settle_lane_once(agent_dir: Path, lane: ManagedLane) -> ManagedLane:
+    if lane.record["state"] == "destroyed":
+        return lane
+    body_id = str(lane.record["body_id"])
+    try:
+        observed = status_run(name=body_id, namespace=SESSION_TMUX_NAMESPACE)
+    except TmuxAgentError:
+        return lane
+    if observed.get("state") in TERMINAL_BODY_STATES:
+        lane = _lane_exited(agent_dir, lane, state="destroyed")
+        _mark_lane_session_stopped(agent_dir, lane, "natural")
+        return lane
+    if _dispatch_abandoned(lane.record):
+        # Its controller died mid-dispatch (a closed terminal, a kill).
+        try:
+            return recover_lane_dispatch(agent_dir, lane)
+        except TmuxAgentError:
+            return lane
+    if lane.record["state"] == "provider_running":
+        try:
+            settled = reconcile_lane_runtime(agent_dir, body_id)
+            if settled.record["session_id"] is not None:
+                # The provider's hook bound it; record the bind and start
+                # once (event keys make repeats no-ops).
+                reconcile_lane_binding(agent_dir, body_id)
+        except TmuxAgentError:
+            return lane
+        if settled.record["state"] == "provider_exited":
+            _mark_lane_session_stopped(agent_dir, settled, "natural")
+        return settled
+    return lane
+
+
+def stop_lane_provider(agent_dir: Path, lane: ManagedLane) -> ManagedLane:
+    """Stop only the lane's admitted agent; its shell stays open."""
+
+    record = lane.record
+    if record["state"] != "provider_running" or record["foreground_process_group"] is None:
+        raise SessionStateError(
+            f"lane {_lane_label(record)} has no running agent (state {record['state']})"
+        )
+    stop_foreground_job(
+        name=str(record["body_id"]),
+        namespace=SESSION_TMUX_NAMESPACE,
+        expected_process_group=int(record["foreground_process_group"]),
+    )
+    lane = _lane_exited(agent_dir, lane)
+    _mark_lane_session_stopped(agent_dir, lane, "explicit")
+    return lane
+
+
+@dataclass(frozen=True)
+class SwapHandoff:
+    """An inspectable snapshot written before a lane changes agents."""
+
+    path: Path
+    lane: str
+    outgoing: SessionKey | None
+    task: str | None
+
+
+def _tail_lines(text: str, count: int) -> list[str]:
+    # tmux pads the visible screen with blank rows; they are not history.
+    lines = text.splitlines()
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines[-count:] if count > 0 else []
+
+
+def _fenced(lines: list[str]) -> str:
+    longest = max(
+        (len(run) for line in lines for run in re.findall(r"`+", line)), default=0
+    )
+    fence = "`" * max(3, longest + 1)
+    return "\n".join([fence, *lines, fence])
+
+
+def capture_swap_handoff(
+    agent_dir: Path,
+    lane_address: str,
+    *,
+    lane_lines: int = HANDOFF_LANE_LINES,
+    chat_lines: int = HANDOFF_CHAT_LINES,
+) -> SwapHandoff:
+    """Persist the lane's last screen lines, chat tail and owned task.
+
+    The capture reads only this lane's own tmux body. It refuses before
+    writing anything when the outgoing agent's task cannot be named exactly,
+    because the replacement would otherwise claim the wrong task or none.
+    """
+
+    lane = resolve_managed_lane(agent_dir, lane_address).record
+    label = lane["name"] or lane["body_id"]
+    outgoing = None
+    task = None
+    if lane["provider"] is not None:
+        outgoing = SessionKey.from_values(lane["provider"], lane["session_id"])
+        claims, diagnostics = _session_task_authorities(agent_dir, outgoing)
+        if len(claims) > 1:
+            numbers = ", ".join(number for number, _path in claims)
+            raise SessionStateError(
+                f"{outgoing.provider}:{outgoing.session_id} owns several tasks ({numbers}); "
+                "close or hand off all but one before swapping"
+            )
+        if diagnostics:
+            raise SessionStateError(
+                "cannot tell which task the outgoing agent owns: " + "; ".join(diagnostics)
+            )
+        task = claims[0][0] if claims else None
+    screen = _tail_lines(
+        peek_run(
+            name=str(lane["body_id"]),
+            namespace=SESSION_TMUX_NAMESPACE,
+            lines=lane_lines,
+        ),
+        lane_lines,
+    )
+    chat_path = agent_dir / "chat_log.md"
+    chat = (
+        _tail_lines(chat_path.read_text(encoding="utf-8"), chat_lines)
+        if chat_path.is_file() and not chat_path.is_symlink()
+        else []
+    )
+    captured_at = _now()
+    owner = (
+        f"{outgoing.provider}:{outgoing.session_id}" if outgoing else "none bound"
+    )
+    text = "\n".join(
+        [
+            f"# Lane handoff: {label} after generation {lane['generation']}",
+            "",
+            f"- Captured: {captured_at}",
+            f"- Lane: {label} ({lane['body_id']})",
+            f"- Outgoing agent: {owner}",
+            f"- Task: {task or 'none (the outgoing agent owned no task)'}",
+            "",
+            f"## Lane screen, last {len(screen)} lines",
+            "",
+            _fenced(screen),
+            "",
+            f"## .agent/chat_log.md, last {len(chat)} lines",
+            "",
+            _fenced(chat),
+            "",
+        ]
+    )
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        handoffs = sessions / ".handoffs"
+        if handoffs.is_symlink():
+            raise SessionStateError("managed lane handoffs directory may not be a symlink")
+        handoffs.mkdir(mode=0o700, exist_ok=True)
+        stamp = captured_at.replace(":", "").replace("-", "").split(".")[0]
+        path = handoffs / f"{lane['body_id']}-g{lane['generation']}-{stamp}.md"
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{path.name}.", suffix=".tmp", dir=handoffs
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+    return SwapHandoff(path=path, lane=label, outgoing=outgoing, task=task)
+
+
+SWAP_PROMPT_PREFIX = "You are taking over lane "
+
+
+def swap_handoff_prompt(handoff: SwapHandoff) -> str:
+    """First message for the replacement agent.
+
+    Only the replacement knows its own native key once it is running, so it
+    claims the task itself with `--handoff-from`, the guarded exchange that
+    succeeds only while the outgoing agent is still the recorded owner.
+    """
+
+    source = ""
+    if handoff.outgoing is not None:
+        source = f" from {handoff.outgoing.provider}:{handoff.outgoing.session_id}"
+    read = (
+        f"read `{handoff.path}` (this lane's last screen lines and the end of "
+        "`.agent/chat_log.md`)"
+    )
+    opening = f"{SWAP_PROMPT_PREFIX}{handoff.lane}{source}. Run `pb-tasks bootstrap`"
+    if handoff.task is None or handoff.outgoing is None:
+        return f"{opening}, then {read}, then wait for the user."
+    number = int(handoff.task)
+    owner = f"{handoff.outgoing.provider}:{handoff.outgoing.session_id}"
+    return (
+        f"{opening}, then `pb-tasks work {number} --handoff-from {owner}`; "
+        "if that refuses, stop and tell the user. "
+        f"Then {read}, and continue task {number} from its current gate."
+    )
+
+
+def _running_elsewhere(keys: list[SessionKey]) -> set[SessionKey]:
+    from tasks.resume import running_session_keys
+
+    return running_session_keys(keys)
+
+
+def swap_lane(
+    agent_dir: Path,
+    lane_address: str,
+    *,
+    provider: str,
+    model: str | None = None,
+    sandbox: bool | None = None,
+    running: Callable[[list[SessionKey]], set[SessionKey]] = _running_elsewhere,
+) -> tuple[ManagedLane, SwapHandoff]:
+    """Hand a lane from its current agent to a new one, keeping the shell.
+
+    Order matters: refuse while nothing has changed, then capture the screen
+    while the outgoing agent still shows it, then stop that agent, then start
+    the replacement. A failed start leaves the handoff file in place.
+    """
+
+    TmuxClient().require("pb-session")
+    lane = settle_lane(agent_dir, resolve_managed_lane(agent_dir, lane_address))
+    label = _lane_label(lane.record)
+    state = lane.record["state"]
+    if state == "destroyed":
+        raise SessionStateError(
+            f"lane {label} is gone (its tmux body ended); "
+            f"use `pb-session resume {label}` to rebuild it"
+        )
+    if state not in {"shell_idle", "provider_exited", "provider_running"}:
+        raise SessionStateError(f"lane {label} is {state}; wait for it or stop it first")
+    try:
+        selected = identity_spec(provider).provider
+    except (TypeError, ValueError) as exc:
+        raise SessionStateError(f"unknown interactive provider: {provider}") from exc
+    unsupported = provider_support_error(selected, Path(lane.record["project"]))
+    if unsupported:
+        raise SessionStateError(f"managed {selected} session is unavailable: {unsupported}")
+    outgoing = _lane_key(lane.record)
+    if outgoing is not None and state != "provider_running" and outgoing in running([outgoing]):
+        raise SessionStateError(
+            f"{outgoing.provider}:{outgoing.session_id} still looks open in another "
+            "terminal; close it before handing its lane over"
+        )
+    handoff = capture_swap_handoff(agent_dir, str(lane.record["body_id"]))
+    if state == "provider_running":
+        lane = stop_lane_provider(agent_dir, lane)
+    if sandbox is None:
+        sandbox = False
+        if outgoing is not None:
+            try:
+                _path, record = resolve_session_record(
+                    agent_dir, f"{outgoing.provider}:{outgoing.session_id}"
+                )
+                sandbox = bool(record.get("sandbox", False))
+            except SessionStateError:
+                pass
+    lane, _reservation = dispatch_provider_generation(
+        agent_dir=agent_dir,
+        lane_address=str(lane.record["body_id"]),
+        provider=selected,
+        model=model,
+        sandbox=sandbox,
+        prompt=swap_handoff_prompt(handoff),
+    )
+    return lane, handoff
+
+
+def _lane_or_none(
+    agent_dir: Path, address: str, *, include_destroyed: bool = False
+) -> ManagedLane | None:
+    """The lane a human name or body ID names, if any; native keys name none."""
+
+    if ":" in address:
+        return None
+    try:
+        return resolve_managed_lane(
+            agent_dir, address, include_destroyed=include_destroyed
+        )
+    except SessionStateError as exc:
+        if str(exc).startswith("lane not found:"):
+            return None
+        raise
+
+
+def _lane_of_record(agent_dir: Path, record: Mapping[str, object]) -> ManagedLane | None:
+    """The lane a conversation last ran in (live or destroyed), if it had one."""
+
+    body_id = record.get("body_id")
+    if not isinstance(body_id, str):
+        return None
+    return _lane_or_none(agent_dir, body_id, include_destroyed=True)
+
+
+def _settle_record(
+    agent_dir: Path, record: dict, lane: ManagedLane | None
+) -> dict:
+    """Mark a `running` record stopped when nothing runs it any more."""
+
+    if record.get("state") != "running":
+        return record
+    key = SessionKey.from_values(record["provider"], record["session_id"])
+    if lane is not None:
+        if lane.record["state"] == "provider_running" and _lane_key(lane.record) == key:
+            return record
+    elif not _terminal_body_state(record):
+        return record
+    body_id = record.get("body_id")
+    _path, stopped = ensure_session_record(
+        agent_dir,
+        key.provider,
+        key.session_id,
+        enrich={"state": "stopped", "stopped_at": _now()},
+        expected={"state": "running", "body_id": body_id},
+        environment={},
+    )
+    _append_session_chronology(
+        agent_dir,
+        stopped,
+        "stop",
+        f"naturally terminated managed session body {body_id}",
+        body_id,
+        "natural",
+        timestamp_field="stopped_at",
+    )
+    return stopped
+
+
+def stop_session(agent_dir: Path, address: str) -> dict | ManagedLane:
+    """Stop an agent. In a lane only the agent stops; the shell stays open."""
+
+    lane = _lane_or_none(agent_dir, address)
+    if lane is None:
+        path, record = resolve_session_record(agent_dir, address)
+        owner = _lane_of_record(agent_dir, record)
+        if owner is not None:
+            owner = settle_lane(agent_dir, owner)
+            key = SessionKey.from_values(record["provider"], record["session_id"])
+            if owner.record["state"] == "provider_running" and _lane_key(owner.record) == key:
+                lane = owner
+            else:
+                # The conversation no longer runs in its lane.
+                return resolve_session_record(agent_dir, address)[1]
+    if lane is not None:
+        lane = settle_lane(agent_dir, lane)
+        if lane.record["state"] == "provider_running":
+            return stop_lane_provider(agent_dir, lane)
+        if lane.record["state"] in {"shell_idle", "provider_exited"}:
+            return lane
+        raise SessionStateError(
+            f"lane {_lane_label(lane.record)} is {lane.record['state']}; nothing to stop"
+        )
+    return _stop_pre_lane_body(agent_dir, address)
+
+
+def _stop_pre_lane_body(agent_dir: Path, address: str) -> dict:
+    """Stop a body launched before lanes, where the agent was the tmux body."""
+
+    path, record = resolve_session_record(agent_dir, address)
+    body_id = record.get("body_id")
+    if record.get("managed") is not True or not body_id:
+        raise SessionStateError(f"session has no managed tmux body: {address}")
     if record.get("state") == "destroyed":
         raise SessionStateError("destroyed session cannot be stopped")
     if record.get("state") == "stopped":
@@ -908,43 +1821,70 @@ def _terminal_body_state(record: Mapping[str, object]) -> bool:
     return observed.get("state") in TERMINAL_BODY_STATES
 
 
+def _attach_lane(lane: ManagedLane) -> None:
+    result = attach_run(name=str(lane.record["body_id"]), namespace=SESSION_TMUX_NAMESPACE)
+    if result != 0:
+        raise SessionStateError(f"tmux attach exited with status {result}")
+
+
+def _free_lane_name(agent_dir: Path, *names: object) -> str | None:
+    for name in names:
+        if isinstance(name, str) and _lane_or_none(agent_dir, name) is None:
+            return name
+    return None
+
+
 def resume_session(
     agent_dir: Path,
     address: str,
     *,
     model: str | None = None,
     attach: bool = True,
-    handshake_timeout: float = 120.0,
     prompt: str | None = None,
-) -> dict:
+) -> ManagedLane:
+    """Resume one exact conversation in its lane, or in a new lane.
+
+    The conversation's own lane is reused when its shell is idle. When that
+    lane is gone (its tmux body ended, e.g. in a reboot) a new lane is built
+    under the same name; when it is busy with another agent, under no name.
+    Returns as soon as the resume command is typed into the shell.
+    """
+
     # Preflight the optional machine dependency before reconciling or reserving
     # any durable session state. The agent can install it with user approval and
     # retry this exact command.
     TmuxClient().require("pb-session")
-    path, record = resolve_session_record(agent_dir, address)
+    lane = _lane_or_none(agent_dir, address, include_destroyed=True)
+    key = None
+    if lane is not None:
+        lane = settle_lane(agent_dir, lane)
+        key = _lane_key(lane.record)
+    if key is None:
+        # A lane that never ran a conversation (e.g. its shell failed to
+        # start) does not hide a stopped conversation of the same name.
+        try:
+            _path, found = resolve_session_record(agent_dir, address)
+        except SessionStateError:
+            if lane is None:
+                raise
+            label = _lane_label(lane.record)
+            raise SessionStateError(
+                f"lane {label} has not run a conversation yet; "
+                f"start one with `pb-session --name {label}`"
+            ) from None
+        key = SessionKey.from_values(found["provider"], found["session_id"])
+        lane = _lane_of_record(agent_dir, found)
+        if lane is not None:
+            lane = settle_lane(agent_dir, lane)
+    _path, record = resolve_session_record(agent_dir, f"{key.provider}:{key.session_id}")
     if record.get("managed") is not True:
         raise SessionStateError("only managed sessions can be resumed")
-    if record.get("state") == "running" and _terminal_body_state(record):
-        old_body_id = record.get("body_id")
-        _path, record = ensure_session_record(
-            agent_dir,
-            record["provider"],
-            record["session_id"],
-            enrich={"state": "stopped", "stopped_at": _now()},
-            expected={"state": "running", "body_id": record.get("body_id")},
-            environment={},
-        )
-        _append_session_chronology(
-            agent_dir,
-            record,
-            "stop",
-            f"naturally terminated managed session body {old_body_id}",
-            old_body_id,
-            "natural",
-            timestamp_field="stopped_at",
-        )
+    record = _settle_record(agent_dir, record, lane)
     if record.get("state") != "stopped":
-        raise SessionStateError("managed resume requires a stopped session")
+        where = f" in lane {_lane_label(lane.record)}" if lane is not None else ""
+        raise SessionStateError(
+            f"{key.provider}:{key.session_id} is already running{where}"
+        )
     project_value = record.get("project")
     cwd_value = record.get("resume_cwd")
     if not isinstance(project_value, str) or not isinstance(cwd_value, str):
@@ -953,35 +1893,30 @@ def resume_session(
     cwd = Path(cwd_value).resolve()
     if resolve_agent_dir(project).resolve() != agent_dir.resolve():
         raise SessionStateError("managed session project resolves to a different agent store")
-    provider = record["provider"]
-    unsupported = provider_support_error(provider, project)
+    unsupported = provider_support_error(key.provider, project)
     if unsupported:
-        raise SessionStateError(f"managed {provider} session is unavailable: {unsupported}")
-    key = SessionKey.from_values(provider, record["session_id"])
-    reservation = reserve_managed_launch(
-        agent_dir,
-        project_root=project,
-        provider=provider,
-        name=record.get("name"),
-        cwd=cwd,
-        model=model,
-        sandbox=bool(record.get("sandbox", False)),
-        operation="resume",
-        expected_key=key,
-    )
-    return _launch_reserved_session(
+        raise SessionStateError(f"managed {key.provider} session is unavailable: {unsupported}")
+    if lane is None or lane.record["state"] not in {"shell_idle", "provider_exited"}:
+        name = _free_lane_name(
+            agent_dir,
+            lane.record["name"] if lane is not None else None,
+            record.get("name"),
+        )
+        lane = create_managed_lane_body(
+            agent_dir=agent_dir, project=project, cwd=cwd, name=name
+        )
+    lane, _reservation = dispatch_provider_generation(
         agent_dir=agent_dir,
-        project=project,
-        cwd=cwd,
-        provider=provider,
-        reservation=reservation,
+        lane_address=str(lane.record["body_id"]),
+        provider=key.provider,
         model=model,
-        resume_session_id=key.session_id,
         sandbox=bool(record.get("sandbox", False)),
-        attach=attach,
-        handshake_timeout=handshake_timeout,
+        resume_session_id=key.session_id,
         prompt=prompt,
     )
+    if attach:
+        _attach_lane(lane)
+    return lane
 
 
 def adopt_session(
@@ -994,8 +1929,7 @@ def adopt_session(
     model: str | None = None,
     sandbox: bool = False,
     attach: bool = True,
-    handshake_timeout: float = 120.0,
-) -> dict:
+) -> ManagedLane:
     """Bring one ad_hoc session under managed control and resume it in a lane.
 
     A session started outside ``pb-session`` leaves only an identity crumb:
@@ -1033,6 +1967,9 @@ def adopt_session(
             f"adopt cwd must be the project root or below it: {working}"
         )
     safe_name = _validate_managed_name(name)
+    # Checked before the sessions lock, which lane lookup takes itself.
+    if safe_name is not None and _lane_or_none(agent_dir, safe_name) is not None:
+        raise SessionStateError(f"session name is already in use: {safe_name}")
 
     with sessions_root_lock(agent_dir, create=True) as sessions:
         path, record = resolve_session_record(agent_dir, address, include_destroyed=True)
@@ -1087,7 +2024,6 @@ def adopt_session(
         f"{provider}:{record['session_id']}",
         model=model,
         attach=attach,
-        handshake_timeout=handshake_timeout,
     )
 
 
@@ -1131,7 +2067,25 @@ def rename_session(agent_dir: Path, address: str, new_name: str) -> dict:
     return renamed
 
 
-def destroy_session(agent_dir: Path, address: str) -> dict:
+def destroy_session(agent_dir: Path, address: str) -> dict | ManagedLane:
+    """Close a lane's shell, or tombstone one stopped conversation record.
+
+    A lane name closes that lane; its conversations stay resumable. A native
+    key tombstones that conversation, as before lanes existed.
+    """
+
+    lane = _lane_or_none(agent_dir, address)
+    if lane is not None:
+        lane = settle_lane(agent_dir, lane)
+        label = _lane_label(lane.record)
+        if lane.record["state"] == "destroyed":
+            return lane
+        if lane.record["state"] not in {"shell_idle", "provider_exited"}:
+            raise SessionStateError(
+                f"lane {label} still runs an agent; `pb-session stop {label}` first"
+            )
+        stop_run(name=str(lane.record["body_id"]), namespace=SESSION_TMUX_NAMESPACE)
+        return _lane_exited(agent_dir, lane, state="destroyed")
     with sessions_root_lock(agent_dir, create=True) as sessions:
         _path, record = resolve_session_record(agent_dir, address)
         if record.get("state") != "stopped":
@@ -1164,9 +2118,13 @@ def start_managed_session(
     model: str | None = None,
     sandbox: bool = False,
     attach: bool = True,
-    handshake_timeout: float = 120.0,
-) -> dict:
-    """Start one tmux body and wait for its provider-native identity binding."""
+    prompt: str | None = None,
+) -> ManagedLane:
+    """Open a shell lane and type the provider's start command into it.
+
+    Returns once the command is typed; the provider binds its native identity
+    on its own. An idle lane with this name is reused; a busy one is refused.
+    """
 
     # Keep project initialization machine-neutral; diagnose tmux only when the
     # user first asks for a managed body, before a launch reservation exists.
@@ -1180,27 +2138,55 @@ def start_managed_session(
     agent_dir = resolve_agent_dir(project)
     launch_cwd = Path.cwd().resolve() if project_root is None else project
     selected = resolve_start_provider(agent_dir, project, provider)
-    reservation = reserve_managed_launch(
-        agent_dir,
-        project_root=project,
-        provider=selected,
-        name=name,
-        cwd=launch_cwd,
-        model=model,
-        sandbox=sandbox,
-    )
-    return _launch_reserved_session(
-        agent_dir=agent_dir,
-        project=project,
-        cwd=launch_cwd,
-        provider=selected,
-        reservation=reservation,
-        model=model,
-        resume_session_id=None,
-        sandbox=sandbox,
-        attach=attach,
-        handshake_timeout=handshake_timeout,
-    )
+    lane = _lane_or_none(agent_dir, name) if name is not None else None
+    if lane is not None:
+        lane = settle_lane(agent_dir, lane)
+        state = lane.record["state"]
+        if state == "destroyed":
+            lane = None
+        elif state not in {"shell_idle", "provider_exited"}:
+            raise SessionStateError(
+                f"lane {name} is busy ({state}); `pb-session swap {name} <provider>` "
+                f"replaces its agent and `pb-session stop {name}` stops it"
+            )
+    if lane is None:
+        try:
+            lane = create_managed_lane_body(
+                agent_dir=agent_dir, project=project, cwd=launch_cwd, name=name
+            )
+        except KeyboardInterrupt:
+            raise SessionStateError("managed session start interrupted; lane closed") from None
+    label = _lane_label(lane.record)
+    try:
+        lane, _reservation = dispatch_provider_generation(
+            agent_dir=agent_dir,
+            lane_address=str(lane.record["body_id"]),
+            provider=selected,
+            model=model,
+            sandbox=sandbox,
+            prompt=prompt,
+        )
+    except (SessionStateError, TmuxAgentError, KeyboardInterrupt) as exc:
+        reason = "start interrupted" if isinstance(exc, KeyboardInterrupt) else str(exc)
+        raise SessionStateError(
+            f"{reason}; lane {label} stays open as a shell (`pb-session attach {label}`)"
+        ) from None
+    if attach:
+        _attach_lane(lane)
+    return lane
+
+
+def _count(minimum: int):
+    def parse(text: str) -> int:
+        try:
+            value = int(text)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"expected a whole number, not {text!r}")
+        if value < minimum:
+            raise argparse.ArgumentTypeError(f"must be at least {minimum}")
+        return value
+
+    return parse
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -1272,14 +2258,106 @@ def _parser() -> argparse.ArgumentParser:
     adopt.add_argument("--name", help="human lane name, e.g. lane-x")
     adopt.add_argument("--attach", action="store_true")
     adopt.add_argument("--model")
-    stop = commands.add_parser("stop", help="stop one managed body, preserving session state")
+    stop = commands.add_parser(
+        "stop", help="stop a lane's agent; the lane's shell stays open"
+    )
     stop.add_argument("address")
+    swap = commands.add_parser(
+        "swap",
+        help="hand a lane to a new agent, keeping its shell",
+        description=(
+            "Save the lane's last 500 screen lines and the last 200 lines of "
+            ".agent/chat_log.md to a handoff file, stop the lane's agent, and "
+            "start PROVIDER in the same shell. Its first message tells it to "
+            "claim the outgoing agent's task with `pb-tasks work N "
+            "--handoff-from <key>` and read the handoff file."
+        ),
+    )
+    swap.add_argument("address", help="lane name or body ID")
+    swap.add_argument(
+        "swap_provider",
+        metavar="provider",
+        nargs="?",
+        choices=("claude", "codex", "agy", "pi", "omp"),
+    )
+    swap.add_argument(
+        "--provider",
+        dest="swap_provider_flag",
+        choices=("claude", "codex", "agy", "pi", "omp"),
+        help="same as the positional provider",
+    )
+    swap.add_argument("--model")
+    swap.add_argument("--attach", action="store_true")
     rename = commands.add_parser("rename", help="change only the human session name")
     rename.add_argument("address")
     rename.add_argument("new_name")
-    destroy = commands.add_parser("destroy", help="tombstone one stopped session")
+    destroy = commands.add_parser(
+        "destroy",
+        help="close an idle lane's shell, or tombstone one stopped conversation",
+    )
     destroy.add_argument("address")
+    restore = commands.add_parser(
+        "restore",
+        help="pick one of this project's recent conversations and resume it here",
+        description=(
+            "Without arguments, list the conversations this project's chat log saw "
+            "recently, newest first. With a task number (or the start of a session "
+            "ID), resume that conversation in this terminal with the provider's own "
+            "resume command."
+        ),
+    )
+    restore.add_argument(
+        "selector", nargs="?", help="task number, lane name, or the start of a session ID"
+    )
+    restore.add_argument(
+        "--days", type=_count(1), default=10, help="how far back to look (default: 10)"
+    )
+    restore.add_argument(
+        "--gates", type=_count(0), default=5,
+        help="last checked gates shown per session (default: 5; 0 hides them)",
+    )
+    restore.add_argument(
+        "--messages", type=_count(0), default=5,
+        help="your last messages shown per session (default: 5; 0 hides them)",
+    )
+    restore.add_argument(
+        "--width", type=_count(40),
+        help="clip report lines to this many columns (default: terminal width)",
+    )
+    restore.add_argument(
+        "--force", action="store_true", help="resume even if it looks open in another terminal"
+    )
     return parser
+
+
+def _restore(options: argparse.Namespace) -> int:
+    from datetime import datetime, timezone
+    import shutil
+
+    from tasks.cli import find_project_root
+    from tasks.resume import ResumeError, exec_plan, run_restore
+
+    project_root = find_project_root().resolve()
+    try:
+        plan = run_restore(
+            resolve_agent_dir(project_root),
+            project_root,
+            options.selector,
+            now=datetime.now(timezone.utc),
+            write=print,
+            days=options.days,
+            force=options.force,
+            width=options.width or shutil.get_terminal_size((100, 24)).columns,
+            messages=options.messages,
+            gates=options.gates,
+        )
+    except ResumeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    if plan is None:
+        return 0
+    print(f"Resuming: {plan.shell_line()}", flush=True)
+    exec_plan(plan, project_root)
 
 
 def _current_agent_dir() -> Path:
@@ -1312,6 +2390,16 @@ def _print_status(value: Mapping[str, object]) -> None:
             f"  latest-recorded-activity: {activity['marker']} "
             f"[{activity['timestamp']}] {activity['body']}"
         )
+    lane = value.get("lane")
+    if isinstance(lane, Mapping):
+        whose = "runs or last ran" if lane["current"] else "has since moved on from"
+        print(
+            f"  lane: {lane['name'] or lane['body_id']} ({lane['body_id']}) "
+            f"state={lane['state']} generation={lane['generation']} "
+            f"agent={lane['agent'] or '-'}; the lane {whose} this conversation"
+        )
+        if lane.get("attention"):
+            print(f"  attention: {lane['attention']}")
     if value.get("resume_command"):
         print(f"  resume: {value['resume_command']}")
     print(f"  chronology: {value['chronology_note']}")
@@ -1320,26 +2408,24 @@ def _print_status(value: Mapping[str, object]) -> None:
 
 
 def _print_summary(value: Mapping[str, object]) -> None:
-    body = value["observed_body"]
+    lane = value.get("lane")
+    # Before lanes the body was the agent; in a lane the shell outlives it,
+    # so the conversation's own lifecycle is the honest column.
+    state = value["lifecycle_state"] if isinstance(lane, Mapping) else value["observed_body"]["state"]
     task = value.get("current_task") or "-"
-    print(f"{value['address']}\t{value['provider']}\t{body['state']}\ttask={task}")
+    line = f"{value['address']}\t{value['provider']}\t{state}\ttask={task}"
+    if isinstance(lane, Mapping) and lane["current"]:
+        line += f"\tlane={lane['state']}"
+    print(line)
 
 
 def main(argv: list[str] | None = None) -> int:
     options = _parser().parse_args(argv)
     try:
         if options.command_name == "list":
-            agent_dir = _current_agent_dir()
-            values = [
-                session_status(
-                    agent_dir,
-                    f"{record['provider']}:{record['session_id']}",
-                    include_destroyed=options.all,
-                )
-                for _path, record in list_session_records(
-                    agent_dir, include_destroyed=options.all
-                )
-            ]
+            values = list_session_status(
+                _current_agent_dir(), include_destroyed=options.all
+            )
             if options.json:
                 print(json.dumps(values, indent=2, sort_keys=True))
             else:
@@ -1362,6 +2448,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if options.command_name == "attach":
             return attach_session(_current_agent_dir(), options.address)
+        if options.command_name == "restore":
+            return _restore(options)
         if options.command_name == "peek":
             sys.stdout.write(
                 peek_session(_current_agent_dir(), options.address, lines=options.lines)
@@ -1376,19 +2464,43 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if options.command_name == "resume":
-            record = resume_session(
+            lane = resume_session(
                 _current_agent_dir(),
                 options.address,
                 model=options.model,
                 attach=options.attach,
                 prompt=options.prompt,
             )
-            address = record.get("name") or f"{record['provider']}:{record['session_id']}"
-            print(f"{address} running ({record['body_id']})")
+            if not options.attach:
+                print(_lane_line(lane, "resuming"))
+            return 0
+        if options.command_name == "swap":
+            chosen = {options.swap_provider, options.swap_provider_flag} - {None}
+            if len(chosen) != 1:
+                raise SessionStateError(
+                    f"name one provider: `pb-session swap {options.address} <provider>`"
+                )
+            lane, handoff = swap_lane(
+                _current_agent_dir(),
+                options.address,
+                provider=chosen.pop(),
+                model=options.model,
+            )
+            outgoing = (
+                f"{handoff.outgoing.provider}:{handoff.outgoing.session_id}"
+                if handoff.outgoing
+                else "an unbound agent"
+            )
+            claim = f"; it will claim task {int(handoff.task)}" if handoff.task else ""
+            print(f"{_lane_label(lane.record)}: handed over from {outgoing}{claim}")
+            print(f"  handoff: {handoff.path}")
+            print(_lane_line(lane, "starting"))
+            if options.attach:
+                _attach_lane(lane)
             return 0
         if options.command_name == "adopt":
             from tasks.cli import find_project_root
-            record = adopt_session(
+            lane = adopt_session(
                 _current_agent_dir(),
                 options.address,
                 project_root=find_project_root().resolve(),
@@ -1398,13 +2510,18 @@ def main(argv: list[str] | None = None) -> int:
                 sandbox=options.sandbox,
                 attach=options.attach,
             )
-            address = record.get("name") or f"{record['provider']}:{record['session_id']}"
-            print(f"adopted {address}")
+            print(f"adopted into {_lane_line(lane, 'resuming')}")
             return 0
         if options.command_name == "stop":
-            record = stop_session(_current_agent_dir(), options.address)
-            address = record.get("name") or f"{record['provider']}:{record['session_id']}"
-            print(f"{address} stopped")
+            stopped = stop_session(_current_agent_dir(), options.address)
+            if isinstance(stopped, ManagedLane):
+                print(
+                    f"{_lane_label(stopped.record)}: agent stopped; the shell stays open "
+                    f"(`pb-session destroy {_lane_label(stopped.record)}` closes it)"
+                )
+            else:
+                address = stopped.get("name") or f"{stopped['provider']}:{stopped['session_id']}"
+                print(f"{address} stopped")
             return 0
         if options.command_name == "rename":
             record = rename_session(
@@ -1413,10 +2530,13 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{record['provider']}:{record['session_id']} named {record['name']}")
             return 0
         if options.command_name == "destroy":
-            record = destroy_session(_current_agent_dir(), options.address)
-            print(f"{record['provider']}:{record['session_id']} destroyed")
+            destroyed = destroy_session(_current_agent_dir(), options.address)
+            if isinstance(destroyed, ManagedLane):
+                print(f"{_lane_label(destroyed.record)}: lane closed")
+            else:
+                print(f"{destroyed['provider']}:{destroyed['session_id']} destroyed")
             return 0
-        record = start_managed_session(
+        lane = start_managed_session(
             name=options.name,
             provider=options.provider,
             model=options.model,
@@ -1427,9 +2547,18 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     if options.detach:
-        address = record.get("name") or f"{record['provider']}:{record['session_id']}"
-        print(f"{address} running ({record['body_id']})")
+        print(_lane_line(lane, "starting"))
     return 0
+
+
+def _lane_line(lane: ManagedLane, verb: str) -> str:
+    record = lane.record
+    label = _lane_label(record)
+    return (
+        f"{label}: shell ready, {record['launch_provider']} {verb} "
+        f"(generation {record['generation']}, {record['body_id']}); "
+        f"`pb-session attach {label}` to watch"
+    )
 
 
 if __name__ == "__main__":

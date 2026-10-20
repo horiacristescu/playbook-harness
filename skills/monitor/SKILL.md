@@ -38,14 +38,15 @@ Each lane owns its implementation and execution record. Follow the project's tas
 
 ## Establish and verify watching
 
-Choose from capabilities actually exposed in the current provider and record the choice on the board.
+Choose from capabilities actually exposed in the current provider and record the choice on the board. When the user asks for a five-minute check, arm a recurring wakeup now; a promise to remember the cadence is not a watcher.
 
 - When Claude's background `Monitor` tool is available, prefer it for live watching because its events can arrive while the conversation continues. Make watcher failure and lost visibility emit events; do not turn an unchanged pane into a conclusion.
-- Claude Cron and `/loop` schedule prompts between turns. A long monitor turn can delay them, so they do not provide responsive live watching by themselves.
-- Codex `/goal`, when available, preserves an objective across turns. It answers whether to continue pursuing the monitoring outcome, not when to wake.
+- In Claude, arm a recurring schedule with the scheduling tool it exposes (for example a five-minute cron job), or ask the user to type `/loop 5m` with the prompt; an agent cannot type a slash command itself. Use an explicit prompt such as `Reconcile the monitor board with every assigned lane; inspect changes, blockers, and deliveries, then act or report.` Verify that the schedule exists through the provider's schedule listing. It fires between turns; a long turn can delay a check. Record its handle and re-arm it after expiry or restart.
+- In Codex, run `pb-codex loop 5m 'MONITOR: Reconcile the board with every assigned lane; inspect changes, blockers, and deliveries, then act or report.'` from the monitor conversation with escalated permissions. Its background process calls `codex queue`, which the sandbox blocks, so a sandboxed start refuses. It targets the current `CODEX_THREAD_ID` and stops when the Codex window it started from closes, so a closed monitor is never prompted headless. Arming again on the same thread replaces the loop. Run `pb-codex loop list` to record the loop ID, send count, and any error, and `pb-codex loop stop <loop-id>` at shutdown. The first tick arrives after five minutes. Codex delivers queued prompts after the current turn, so long turns can accumulate ticks. After a restart or reboot, arm and verify it again.
+- Codex `/goal`, when available, preserves the monitoring objective across turns but does not wake the agent on a timer.
 - Other providers may expose different mechanisms. Verify an actual test event instead of inferring coverage from configuration.
 
-Use public `pb-session` observations inside a watcher rather than assuming a managed lane name is a raw tmux target. Record the mechanism, cadence, handle, coverage, and recovery steps. After session exit or reboot, re-arm and test watching; restoring worker conversations does not establish that supervision resumed.
+Use public `pb-session` observations inside a watcher rather than assuming a managed lane name is a raw tmux target. Record the mechanism, cadence, handle, coverage, and recovery steps. Verify the first received wakeup and resulting lane check, not just the schedule or send receipt. After session exit or reboot, re-arm and test watching; restoring worker conversations does not establish that supervision resumed.
 
 ## Observe, decide, act
 
@@ -70,6 +71,8 @@ Write the assignment gate as the work is sent. Keep the outcome and necessary co
 pb-session send NAME 'MONITOR: Continue the approved task at its current gate.'
 pb-session peek NAME 40
 ```
+
+A lane is a shell that outlives its agent. `send` refuses when no agent runs there, because the text would execute as a shell command. `pb-session swap NAME PROVIDER` saves a handoff and starts another provider in the same shell. `pb-session stop NAME` ends the agent and keeps the shell; `pb-session destroy NAME` closes the shell. Use these only with authority.
 
 Preserve arbitrary message text through shell quoting; never interpolate it into executable shell syntax. Serialize messages to one recipient. If input remains unconsumed, inspect before retrying so duplicates do not create duplicate work.
 
@@ -98,7 +101,7 @@ pb-tasks resume monitor
 
 It resumes the conversation that owns the one open monitor task, with a recovery prompt, and refuses when several are open; `pb-tasks resume N` names the task instead. Any task's conversation comes back the same way, and `pb-tasks resume` alone lists open tasks with their sessions.
 
-Then recover the lanes with `pb-session list --all` and `pb-session status NAME`. A lane showing `recorded=running` with `observed-body=lost` lost only its box; `pb-session resume provider:native-id` puts the same conversation in a new one. Match the saved provider and native session ID, not a reusable lane name. Resume within the user's existing authorization, preserve stopped conversations for inspection, confirm identity and model, update the recovery gate, then re-arm watching. Use `pb-session stop NAME` only with authority. Inside a managed lane, `$PLAYBOOK_SESSION_NAME` holds its lane name.
+Then recover the lanes with `pb-session list --all` and `pb-session status NAME`. A reboot closes every lane but keeps its last conversation. `pb-session resume NAME` builds a new lane with the same name and resumes that conversation in it. Compare the native ID that status reports with the one on the board first: a swap moves a lane to a new conversation. `pb-session resume provider:native-id` resumes an exact conversation instead. Resume within the user's existing authorization, preserve stopped conversations for inspection, confirm identity and model, update the recovery gate, then re-arm watching. Inside a managed lane, `$PLAYBOOK_SESSION_NAME` holds its lane name.
 
 ## Known limits
 

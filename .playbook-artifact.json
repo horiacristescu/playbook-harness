@@ -1,5 +1,5 @@
 {
-  "commit": "73feb95e258392d0de3c4b5fb0504af4ab8da166",
+  "commit": "25430912e22893e723464a875d062d4b6c89f5cd",
   "files": [
     {
       "destination": "LICENSE",
@@ -208,7 +208,7 @@
     {
       "destination": "bin/pb-codex",
       "mode": "0755",
-      "sha256": "17644f9a2aef182bf43aae2704157495cdd05ea1476a3d07ebc690630e0cdcd4",
+      "sha256": "15441b0acf1772d4891023250f512c0e7e260fd86df4424de5bdd83f7332f10d",
       "source": "bin/playbook-codex"
     },
     {
@@ -286,13 +286,13 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "252f06937e1dbfe0b3021d90eb31bdbbf41a2055a72de0c82eff45595de62721",
+      "sha256": "73a35c2933cbc6d0e78864a44e53ee16b6010c75c79960318d238507eaa9d791",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
       "destination": "docs/command-reference.md",
       "mode": "0644",
-      "sha256": "2eb3dc40f30a905941c9994a8aee7b94b4b84752dabf7f270e8223bfca35a5de",
+      "sha256": "5c5aa108f208381040c5998996c0ab3cfd4909d010fc6a4996afc3a96fbfe276",
       "source": "docs/command-reference.md"
     },
     {
@@ -334,7 +334,7 @@
     {
       "destination": "docs/sessions-and-monitoring.md",
       "mode": "0644",
-      "sha256": "f70d6afe57f23e23679b5e217d29658daaf505fbefcdad51e7a7b737e102aadf",
+      "sha256": "cb9fe487875cb38d211bcd02ec82567be1d5fd0d437e07c5e81ea5f58b9d7e38",
       "source": "docs/sessions-and-monitoring.md"
     },
     {
@@ -384,6 +384,12 @@
       "mode": "0755",
       "sha256": "cac51c43c3ec925b86788ec4a3b7b1f3916442f461820f28ef1b229f654fdc88",
       "source": "scripts/codex-apply-patch-hook"
+    },
+    {
+      "destination": "scripts/codex-loop.py",
+      "mode": "0644",
+      "sha256": "0c21c5f8ef5db01132bf9ccbb7d1b23e5f5d9fa56a770fa73c5f7ee8b7451ca5",
+      "source": "scripts/codex-loop.py"
     },
     {
       "destination": "scripts/codex-stop-hook",
@@ -520,7 +526,7 @@
     {
       "destination": "skills/monitor/SKILL.md",
       "mode": "0644",
-      "sha256": "50ed252fcaf39e5a8e112caa76721e0433686f71f724647fd0c6597950d332a1",
+      "sha256": "96c01048be1737b875422d184478719ff3972cc91bdfac2f224419fc09a29af0",
       "source": "skills/monitor/SKILL.md"
     },
     {
@@ -670,7 +676,7 @@
     {
       "destination": "src/provider/adapters/codex.py",
       "mode": "0644",
-      "sha256": "4653d1dfcf4b857319bab80fa36bafad39425d5f24a52971a0d56dcdbea5e353",
+      "sha256": "f58f41f9645f033b6d9bbd16511f76775e644f9f144957632fbbb6394ef6966e",
       "source": "src/provider/adapters/codex.py"
     },
     {
@@ -736,13 +742,13 @@
     {
       "destination": "src/provider/session_identity.py",
       "mode": "0644",
-      "sha256": "58190b4b04cb7baece1f47cdd093fa3a941c8ff527713cffadbcc08483520adb",
+      "sha256": "dfe37d131ab5d41c7837b43ecf90107de9b4496f4f23610e8d0c8b9e206b6698",
       "source": "src/provider/session_identity.py"
     },
     {
       "destination": "src/provider/session_state.py",
       "mode": "0644",
-      "sha256": "9957eb3cd6097afc06535c0524d3c5088bcf4997410b7ba5a50b2bb330894500",
+      "sha256": "f694a9e1b680b0502e910d2040ef55de8305dfc461819ef770ba898140544199",
       "source": "src/provider/session_state.py"
     },
     {
@@ -754,7 +760,7 @@
     {
       "destination": "src/session_cli.py",
       "mode": "0644",
-      "sha256": "9409856dd5473df4950872808dae871f830191923fd6aa55f284972a3c7de7a0",
+      "sha256": "9a20783c027983602abf301d5bfcc65904e8a646ab124f786abb182a5f1782eb",
       "source": "src/session_cli.py"
     },
     {
@@ -766,7 +772,7 @@
     {
       "destination": "src/tasks/chat_state.py",
       "mode": "0644",
-      "sha256": "45c5e7e2692b6b49c28a94b947802c0983b3cc8bf3c25fd27d26d854e1ca3bc0",
+      "sha256": "0baf8d9e2dc199991fb8951f2d9451c403f0de2298719895c864069e32db9eff",
       "source": "src/tasks/chat_state.py"
     },
     {
@@ -838,7 +844,7 @@
     {
       "destination": "src/tasks/resume.py",
       "mode": "0644",
-      "sha256": "322b61c922bf4bc684d27c678216382f4874184cc21624e0668925e411f6ec21",
+      "sha256": "557d9b1190f24541c5a35d4d7b5c3dc7a43a7f72f9fc3038d99486c586e87e92",
       "source": "src/tasks/resume.py"
     },
     {
@@ -886,7 +892,7 @@
     {
       "destination": "src/tmux_agent.py",
       "mode": "0644",
-      "sha256": "011ced5f63dfb14480a6e95a4c317f7b31f05a817d0a713d8bf260d144e97a17",
+      "sha256": "aec71c4462a6fb1c29568290d233a337bbb910057a7ff067e3a4bc682e707269",
       "source": "src/tmux_agent.py"
     }
   ],

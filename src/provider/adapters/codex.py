@@ -165,7 +165,14 @@ class CodexAdapter(ProviderAdapter):
 
     def interactive_argv(self, *, prompt: str, model: Optional[str] = None,
                          resume_session_id: Optional[str] = None) -> list[str]:
-        options = ["--model", model] if model else []
+        # Codex's default shell policy filters launcher-owned environment
+        # variables from hooks and agent-run commands. Managed Playbook lanes
+        # carry their one-shot binding capability in that environment after
+        # parent identities have already been scrubbed. Preserve that exact
+        # child boundary for the first hook and for bootstrap.
+        options = ["-c", "shell_environment_policy.inherit=all"]
+        if model:
+            options += ["--model", model]
         if resume_session_id:
             return ["resume", *options, resume_session_id, prompt]
         return [*options, prompt]

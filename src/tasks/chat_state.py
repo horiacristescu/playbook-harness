@@ -14,7 +14,7 @@ import tempfile
 from typing import Iterator
 import uuid
 
-from provider.session_state import SessionKey, session_directory
+from provider.session_state import SessionKey, lane_name_for_body, session_directory
 
 
 CHAT_HEADER = (
@@ -229,7 +229,9 @@ def _recorded_session_name(agent_dir: Path, key: SessionKey) -> str | None:
     value = record.get("name")
     if isinstance(value, str) and _SESSION_NAME_RE.fullmatch(value):
         return value
-    return None
+    # A conversation started in a shell lane is named by its lane, not by its
+    # own record, because one lane runs many conversations over time.
+    return lane_name_for_body(agent_dir, record.get("body_id"))
 
 
 def _validate_entry_values(

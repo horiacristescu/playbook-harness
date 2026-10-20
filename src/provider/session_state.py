@@ -51,6 +51,19 @@ _MANAGED_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _BODY_ID_RE = _MANAGED_NAME_RE
 _LAUNCH_SCHEMA = 1
 _LAUNCH_OWNER = "playbook-managed-launch/schema-1"
+_LANE_SCHEMA = 1
+_LANE_OWNER = "playbook-managed-lane/schema-1"
+_LANE_STATES = frozenset(
+    {
+        "provisional",
+        "shell_idle",
+        "launch_reserved",
+        "provider_running",
+        "provider_exited",
+        "relaunching",
+        "destroyed",
+    }
+)
 
 
 class SessionStateError(ValueError):
@@ -79,6 +92,14 @@ class ManagedLaunchReservation:
     path: Path
     provider: str
     name: str | None
+
+
+@dataclass(frozen=True)
+class ManagedLane:
+    """A durable tmux lane whose identity outlives provider generations."""
+
+    path: Path
+    record: dict
 
 
 def _timestamp() -> str:
@@ -188,6 +209,281 @@ def _launches_directory(sessions: Path) -> Path:
     return launches
 
 
+def _lanes_directory(sessions: Path) -> Path:
+    lanes = sessions / ".lanes"
+    if lanes.is_symlink():
+        raise SessionStateError("managed lanes directory may not be a symlink")
+    lanes.mkdir(mode=0o700, exist_ok=True)
+    if lanes.is_symlink() or not lanes.is_dir():
+        raise SessionStateError("managed lanes directory must be real")
+    return lanes
+
+
+def _lane_path(lanes: Path, body_id: str) -> Path:
+    return lanes / f"{_validate_body_id(body_id)}.json"
+
+
+def _validate_lane(value: object, path: Path) -> dict:
+    if not isinstance(value, dict):
+        raise SessionStateError("managed lane must contain one JSON object")
+    required = {
+        "schema", "owner", "name", "body_id", "project", "cwd", "state",
+        "generation", "launch_provider", "foreground_process_group", "provider",
+        "session_id", "last_bound_at", "created_at", "updated_at",
+    }
+    if set(value) != required:
+        raise SessionStateError(f"managed lane has invalid fields: {path}")
+    if value["schema"] != _LANE_SCHEMA or value["owner"] != _LANE_OWNER:
+        raise SessionStateError("managed lane ownership/schema is invalid")
+    _validate_managed_name(value["name"])
+    _validate_body_id(value["body_id"])
+    for field in ("project", "cwd"):
+        if not isinstance(value[field], str) or not Path(value[field]).is_absolute():
+            raise SessionStateError(f"managed lane {field} must be absolute")
+    if value["state"] not in _LANE_STATES:
+        raise SessionStateError("managed lane state is invalid")
+    if not isinstance(value["generation"], int) or value["generation"] < 0:
+        raise SessionStateError("managed lane generation must be a nonnegative integer")
+    launch_provider = value["launch_provider"]
+    if launch_provider is not None:
+        canonical = SessionKey.from_values(launch_provider, "validation-id").provider
+        if launch_provider != canonical:
+            raise SessionStateError("managed lane launch provider is not canonical")
+    foreground = value["foreground_process_group"]
+    if foreground is not None and (not isinstance(foreground, int) or foreground <= 1):
+        raise SessionStateError("managed lane foreground process group is invalid")
+    provider, session_id = value["provider"], value["session_id"]
+    if (provider is None) != (session_id is None):
+        raise SessionStateError("managed lane provider identity must be complete or absent")
+    if provider is not None:
+        SessionKey.from_values(provider, session_id)
+    _parse_timestamp(value["created_at"], field="created_at")
+    _parse_timestamp(value["updated_at"], field="updated_at")
+    if value["last_bound_at"] is not None:
+        _parse_timestamp(value["last_bound_at"], field="last_bound_at")
+    return dict(value)
+
+
+def create_managed_lane(
+    agent_dir: Path,
+    *,
+    project_root: Path,
+    name: str | None,
+    cwd: Path,
+    body_id: str | None = None,
+    now: Callable[[], str] = _timestamp,
+) -> ManagedLane:
+    """Create the name-addressable authority for one durable shell lane."""
+
+    safe_name = _validate_managed_name(name)
+    safe_body = _validate_body_id(body_id or f"body-{secrets.token_hex(16)}")
+    timestamp = now()
+    _parse_timestamp(timestamp, field="created_at")
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        lanes = _lanes_directory(sessions)
+        path = _lane_path(lanes, safe_body)
+        if path.exists() or path.is_symlink():
+            raise SessionStateError(f"managed lane body is already in use: {safe_body}")
+        for candidate in lanes.glob("*.json"):
+            lane = _validate_lane(json.loads(candidate.read_text(encoding="utf-8")), candidate)
+            if lane["state"] != "destroyed" and safe_name is not None and lane["name"] == safe_name:
+                raise SessionStateError(f"session name is already in use: {safe_name}")
+        record = {
+            "schema": _LANE_SCHEMA,
+            "owner": _LANE_OWNER,
+            "name": safe_name,
+            "body_id": safe_body,
+            "project": str(project_root.resolve()),
+            "cwd": str(cwd.resolve()),
+            "state": "provisional",
+            "generation": 0,
+            "launch_provider": None,
+            "foreground_process_group": None,
+            "provider": None,
+            "session_id": None,
+            "last_bound_at": None,
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+        _validate_lane(record, path)
+        _atomic_json(path, record)
+        return ManagedLane(path, record)
+
+
+def resolve_managed_lane(
+    agent_dir: Path, address: str, *, include_destroyed: bool = False
+) -> ManagedLane:
+    """Resolve a lane by human name or body ID, independently of provider binding.
+
+    A live lane always wins. With ``include_destroyed`` and no live match, the
+    most recently updated destroyed lane answers, so a lane whose tmux body
+    died in a reboot can still say which conversation it last ran.
+    """
+
+    if not address:
+        raise SessionStateError("lane address may not be empty")
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        lanes = _lanes_directory(sessions)
+        matches: list[ManagedLane] = []
+        destroyed: list[ManagedLane] = []
+        for path in lanes.glob("*.json"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            lane = _validate_lane(json.loads(path.read_text(encoding="utf-8")), path)
+            if lane["body_id"] != address and lane["name"] != address:
+                continue
+            if lane["state"] == "destroyed":
+                destroyed.append(ManagedLane(path, lane))
+            else:
+                matches.append(ManagedLane(path, lane))
+        if not matches and include_destroyed and destroyed:
+            return max(destroyed, key=lambda lane: lane.record["updated_at"])
+        if not matches:
+            raise SessionStateError(f"lane not found: {address}")
+        if len(matches) != 1:
+            raise SessionStateError(f"lane address is ambiguous: {address}")
+        return matches[0]
+
+
+def list_managed_lanes(
+    agent_dir: Path, *, include_destroyed: bool = False
+) -> list[ManagedLane]:
+    """Every lane record, oldest first."""
+
+    if not (agent_dir / "sessions").is_dir():
+        return []
+    with sessions_root_lock(agent_dir, create=False) as sessions:
+        lanes = _lanes_directory(sessions)
+        found = []
+        for path in lanes.glob("*.json"):
+            if path.is_symlink() or not path.is_file():
+                continue
+            lane = _validate_lane(json.loads(path.read_text(encoding="utf-8")), path)
+            if include_destroyed or lane["state"] != "destroyed":
+                found.append(ManagedLane(path, lane))
+    return sorted(found, key=lambda lane: lane.record["created_at"])
+
+
+def lane_name_for_body(agent_dir: Path, body_id: object) -> str | None:
+    """Read a lane's human name for a label; never used as identity."""
+
+    if not isinstance(body_id, str):
+        return None
+    try:
+        path = _lane_path(agent_dir / "sessions" / ".lanes", body_id)
+        if path.is_symlink() or not path.is_file():
+            return None
+        name = json.loads(path.read_text(encoding="utf-8")).get("name")
+    except (OSError, ValueError, SessionStateError, AttributeError):
+        return None
+    return name if isinstance(name, str) and _MANAGED_NAME_RE.fullmatch(name) else None
+
+
+class LaneTransitionConflict(SessionStateError):
+    """Another controller moved the lane first; re-read it and decide again."""
+
+
+def transition_managed_lane(
+    agent_dir: Path,
+    body_id: str,
+    *,
+    expected_state: str,
+    state: str,
+    expected_generation: int | None = None,
+    provider: str | None = None,
+    session_id: str | None = None,
+    launch_provider: str | None = None,
+    foreground_process_group: int | None = None,
+    last_bound_at: str | None = None,
+    advance_generation: bool = False,
+    now: Callable[[], str] = _timestamp,
+) -> ManagedLane:
+    """Compare-and-swap one lane transition under the sessions-root lock."""
+
+    if expected_state not in _LANE_STATES or state not in _LANE_STATES:
+        raise SessionStateError("managed lane transition state is invalid")
+    timestamp = now()
+    _parse_timestamp(timestamp, field="updated_at")
+    with sessions_root_lock(agent_dir, create=False) as sessions:
+        path = _lane_path(_lanes_directory(sessions), body_id)
+        if path.is_symlink() or not path.is_file():
+            raise SessionStateError(f"lane not found: {body_id}")
+        current = _validate_lane(json.loads(path.read_text(encoding="utf-8")), path)
+        if current["state"] != expected_state:
+            raise LaneTransitionConflict(
+                f"managed lane {body_id} is {current['state']}, expected {expected_state}"
+            )
+        if expected_generation is not None and current["generation"] != expected_generation:
+            raise LaneTransitionConflict(
+                f"managed lane {body_id} is at generation {current['generation']}, "
+                f"expected {expected_generation}"
+            )
+        if (provider is None) != (session_id is None):
+            raise SessionStateError("managed lane provider identity must be complete or absent")
+        if provider is not None:
+            key = SessionKey.from_values(provider, session_id)
+            provider, session_id = key.provider, key.session_id
+        if launch_provider is not None:
+            launch_provider = SessionKey.from_values(
+                launch_provider, "validation-id"
+            ).provider
+        if foreground_process_group is not None and foreground_process_group <= 1:
+            raise SessionStateError("managed lane foreground process group is invalid")
+        updated = dict(current)
+        updated.update(
+            {
+                "state": state,
+                "provider": provider,
+                "session_id": session_id,
+                "launch_provider": launch_provider,
+                "foreground_process_group": foreground_process_group,
+                "last_bound_at": last_bound_at,
+                "updated_at": timestamp,
+            }
+        )
+        if advance_generation:
+            updated["generation"] += 1
+        _validate_lane(updated, path)
+        _atomic_json(path, updated)
+        return ManagedLane(path, updated)
+
+
+def _finalize_lane_binding_locked(
+    sessions: Path,
+    *,
+    body_id: str,
+    key: SessionKey,
+    bound_at: str,
+) -> None:
+    """Publish hook-observed native identity into an admitted lane generation."""
+
+    lanes = _lanes_directory(sessions)
+    path = _lane_path(lanes, body_id)
+    if not path.exists():
+        return  # Compatibility for pre-lane managed sessions.
+    if path.is_symlink() or not path.is_file():
+        raise SessionStateError("managed lane authority is unsafe")
+    lane = _validate_lane(json.loads(path.read_text(encoding="utf-8")), path)
+    if lane["state"] not in {"launch_reserved", "relaunching", "provider_running"}:
+        raise SessionStateError(
+            f"managed lane cannot bind from state {lane['state']}: {body_id}"
+        )
+    if lane["launch_provider"] != key.provider:
+        raise SessionStateError("managed lane admitted a different provider")
+    existing = (lane["provider"], lane["session_id"])
+    if existing != (None, None) and existing != (key.provider, key.session_id):
+        raise SessionStateError("managed lane generation is already bound differently")
+    lane.update(
+        state="provider_running",
+        provider=key.provider,
+        session_id=key.session_id,
+        last_bound_at=bound_at,
+        updated_at=bound_at,
+    )
+    _validate_lane(lane, path)
+    _atomic_json(path, lane)
+
+
 def _launch_path(launches: Path, token: str) -> Path:
     if not isinstance(token, str) or len(token) < 16 or "\0" in token:
         raise SessionStateError("managed launch token is malformed")
@@ -295,6 +591,10 @@ def reserve_managed_launch(
     with sessions_root_lock(agent_dir, create=True) as sessions:
         launches = _launches_directory(sessions)
         _remove_expired_launches(launches, at=created)
+        if body_id is not None:
+            # A body launches one generation at a time. A token the previous
+            # one never claimed must not bind into this one.
+            _revoke_unclaimed_launches_locked(launches, safe_body)
         launch_path = _launch_path(launches, raw_token)
         if launch_path.exists() or launch_path.is_symlink():
             raise SessionStateError("managed launch token is already reserved")
@@ -418,6 +718,76 @@ def cancel_managed_launch(
         finally:
             os.close(directory_fd)
         return True
+
+
+def revoke_unclaimed_launches(agent_dir: Path, body_id: str) -> int:
+    """Remove a body's launch capabilities that no provider has claimed.
+
+    For when the caller knows no process of that body can still present
+    them: the launcher never ran, or the generation it started has ended.
+    """
+
+    safe_body = _validate_body_id(body_id)
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        return _revoke_unclaimed_launches_locked(_launches_directory(sessions), safe_body)
+
+
+def _revoke_unclaimed_launches_locked(launches: Path, body_id: str) -> int:
+    removed = 0
+    for path in launches.glob("*.json"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            launch = _validate_launch(json.loads(path.read_text(encoding="utf-8")), path)
+        except (OSError, json.JSONDecodeError, SessionStateError):
+            continue
+        if launch["body_id"] == body_id and launch["state"] == "reserved":
+            path.unlink()
+            removed += 1
+    return removed
+
+
+def record_lane_foreground(
+    agent_dir: Path,
+    body_id: str,
+    *,
+    generation: int,
+    foreground_process_group: int,
+    now: Callable[[], str] = _timestamp,
+) -> ManagedLane:
+    """Publish the process group a dispatched generation runs as.
+
+    The provider's hook may already have bound this generation, so the lane
+    keeps whatever identity it holds and only becomes provider_running.
+    """
+
+    if foreground_process_group <= 1:
+        raise SessionStateError("managed lane foreground process group is invalid")
+    timestamp = now()
+    _parse_timestamp(timestamp, field="updated_at")
+    with sessions_root_lock(agent_dir, create=False) as sessions:
+        path = _lane_path(_lanes_directory(sessions), body_id)
+        if path.is_symlink() or not path.is_file():
+            raise SessionStateError(f"lane not found: {body_id}")
+        current = _validate_lane(json.loads(path.read_text(encoding="utf-8")), path)
+        if current["generation"] != generation or current["state"] not in {
+            "launch_reserved",
+            "relaunching",
+            "provider_running",
+        }:
+            raise SessionStateError(
+                f"managed lane {body_id} moved on (generation {current['generation']}, "
+                f"{current['state']}) before generation {generation} started"
+            )
+        updated = dict(
+            current,
+            state="provider_running",
+            foreground_process_group=foreground_process_group,
+            updated_at=timestamp,
+        )
+        _validate_lane(updated, path)
+        _atomic_json(path, updated)
+        return ManagedLane(path, updated)
 
 
 def _validate_record(value: object, expected: SessionKey | None = None) -> dict:
@@ -612,8 +982,12 @@ def bind_managed_launch(
             existing = _validate_record(
                 json.loads(record_path.read_text(encoding="utf-8")), key
             )
+            # A hook firing again for a conversation this body already runs.
+            # A stopped one is being resumed: a lane's shell outlives its
+            # agents, so the same body can host it again and must claim anew.
             if (
                 existing.get("managed") is True
+                and existing.get("state") == "running"
                 and existing.get("body_id") == body_id
                 and existing.get("project") == str(project)
             ):
@@ -626,7 +1000,29 @@ def bind_managed_launch(
                         key.provider,
                         key.session_id,
                     ):
+                        _finalize_lane_binding_locked(
+                            sessions,
+                            body_id=body_id,
+                            key=key,
+                            bound_at=current_text,
+                        )
                         path.unlink()
+                else:
+                    lane_path = _lane_path(_lanes_directory(sessions), body_id)
+                    if lane_path.is_file() and not lane_path.is_symlink():
+                        lane = _validate_lane(
+                            json.loads(lane_path.read_text(encoding="utf-8")), lane_path
+                        )
+                        if (lane["provider"], lane["session_id"]) != (
+                            key.provider,
+                            key.session_id,
+                        ):
+                            _finalize_lane_binding_locked(
+                                sessions,
+                                body_id=body_id,
+                                key=key,
+                                bound_at=current_text,
+                            )
                 return record_path, existing
         if path.is_symlink():
             raise SessionStateError("managed launch capability may not be a symlink")
@@ -700,6 +1096,12 @@ def bind_managed_launch(
             enrich=enrich,
             now=lambda: current_text,
             environment={},
+        )
+        _finalize_lane_binding_locked(
+            sessions,
+            body_id=body_id,
+            key=key,
+            bound_at=current_text,
         )
         path.unlink()
         launches_fd = os.open(launches, os.O_RDONLY)

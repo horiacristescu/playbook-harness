@@ -60,6 +60,27 @@ With no argument it lists open tasks with their sessions and last messages.
 conversations for 30 days by default.
 
 ```bash
+pb-session restore [--days N] [--gates N] [--messages N] [--width N]
+pb-session restore <task-number|lane-name|id> [--force]
+```
+
+After a reboot, when you do not know which task or session you were in. With
+no argument it prints a report of this project's conversations from the last
+10 days, newest first. Each block shows the handle to type, the provider, the
+lane name, the task with its last five checked gates, and your last five
+messages, one line each. `--days`, `--gates` and `--messages` change those
+numbers (0 hides gates or messages), and `--width` clips lines to N columns
+instead of the terminal width. The handle is the task number, or the start of
+the session ID for a session without a task; a lane name also works. With a
+handle it resumes that conversation in this terminal with the provider's own
+resume command. That includes a managed lane, which comes back as a plain
+session in this terminal. A session that looks open elsewhere needs `--force`.
+The report marks the sessions that are running now. It reads the project's
+chat log and keeps only sessions that the provider recorded as running in this
+project's folder or below it; any others logged here are named at the end with
+their folder.
+
+```bash
 pb-tasks context <N>
 pb-tasks log
 pb-tasks narrative --status
@@ -126,13 +147,37 @@ Prepare Playbook task and chat identifiers for a clean branch merge. Use
 ## Managed sessions
 
 ```bash
-pb-session
+pb-session [--name <lane>] [--provider <provider>] [--detach]
 pb-session list
-pb-session status <name-or-native-id>
+pb-session status <lane-or-native-id>
+pb-session attach|peek|send <lane>
+pb-session swap <lane> <provider>
+pb-session stop <lane>
+pb-session resume <lane-or-native-id>
+pb-session destroy <lane>
 ```
 
-Start the default provider in managed tmux, list recorded sessions, or inspect
-one session and its resume route.
+A managed lane is a shell in Playbook's own tmux server. Playbook opens the
+shell, types the agent's start command into it, and returns; the agent binds
+its conversation a moment later, and `status` shows when it has. `--name`
+reuses an idle lane of that name and refuses a busy one.
+
+`stop` ends the agent and leaves the shell open. `destroy` closes the shell,
+and refuses while an agent still runs. Neither forgets the conversation, so
+`resume` can bring it back: into the same shell when the lane is idle, or into
+a new lane with the same name after a reboot ended the old one.
+
+`swap` changes the agent in a lane, for example from Codex to Claude. It saves
+the lane's last 500 screen lines and the last 200 lines of
+`.agent/chat_log.md` to a handoff file, stops the agent, and starts the new
+provider in the same shell. The new agent's first message tells it to claim
+the outgoing agent's task with `pb-tasks work N --handoff-from <old-key>` and
+read the handoff file. The provider can also be given as `--provider`.
+
+`send` types only into a running agent. With no agent in the foreground the
+text would run as a shell command, so it refuses; use `attach` to work in the
+shell. A conversation's native ID addresses its lane only while the lane still
+runs it. After a swap, use the lane name.
 
 Provider launchers are also available:
 

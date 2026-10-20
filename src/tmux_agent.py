@@ -47,6 +47,10 @@ class IdentityExistsError(TmuxAgentError):
     """Raised when a logical run identity has already been reserved."""
 
 
+class UnexpectedForegroundError(TmuxAgentError):
+    """Raised before pasting: the pane's foreground job is not the expected one."""
+
+
 def validate_identifier(value: str, *, label: str) -> str:
     if not IDENTIFIER_RE.fullmatch(value):
         raise TmuxAgentError(
@@ -390,8 +394,35 @@ def send_message(
     namespace: str = DEFAULT_NAMESPACE,
     state_dir: str | os.PathLike[str] | None = None,
     enter: bool = True,
+    expected_foreground: int | None = None,
     client: TmuxClient | None = None,
 ) -> None:
+    _validate_terminal_message(message)
+    paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    tmux, session = require_owned_session(metadata, client)
+    pane_state = _pane_fields(tmux, session)
+    if pane_state["pane_dead"]:
+        raise TmuxAgentError(f"cannot send to dead tmux pane: {session}")
+    lock_fd = os.open(paths.run_dir, os.O_RDONLY)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        if expected_foreground is not None:
+            # Shell dispatch and foreground stops take this lock too, so no
+            # swap can land between this look and the paste; only the job
+            # exiting on its own still can, in that instant.
+            _shell, foreground = _owned_terminal_foreground_group(metadata)
+            if foreground != expected_foreground:
+                raise UnexpectedForegroundError(
+                    f"pane foreground is process group {foreground}, not "
+                    f"{expected_foreground}; nothing was sent"
+                )
+        _paste_terminal_message(tmux, metadata, session, message, enter=enter)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _validate_terminal_message(message: str) -> None:
     if "\0" in message:
         raise TmuxAgentError("message may not contain NUL bytes")
     unsupported_controls = sorted(
@@ -402,39 +433,175 @@ def send_message(
         raise TmuxAgentError(
             f"message contains terminal control bytes that cannot be preserved literally: {rendered}"
         )
-    paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
-    tmux, session = require_owned_session(metadata, client)
-    pane_state = _pane_fields(tmux, session)
-    if pane_state["pane_dead"]:
-        raise TmuxAgentError(f"cannot send to dead tmux pane: {session}")
+
+
+def _paste_terminal_message(
+    tmux: TmuxClient,
+    metadata: Mapping[str, Any],
+    session: str,
+    message: str,
+    *,
+    enter: bool,
+) -> None:
     pane = metadata.get("pane_id")
     target = pane if isinstance(pane, str) and pane else session
     buffer_name = f"pbta-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+    commands = [
+        "load-buffer", "-b", buffer_name, "-", ";", "paste-buffer", "-p",
+        "-d", "-b", buffer_name, "-t", target,
+    ]
+    tmux.run(commands, input_bytes=message.encode("utf-8"))
+    if enter:
+        # Full-screen editors consume bracketed paste asynchronously.
+        time.sleep(0.1)
+        tmux.run(["send-keys", "-t", target, "Enter"])
+
+
+def _owned_terminal_foreground_group(metadata: Mapping[str, Any]) -> tuple[int, int]:
+    shell_group = metadata.get("process_group")
+    terminal_session = metadata.get("terminal_session")
+    tty = metadata.get("pane_tty")
+    if not isinstance(shell_group, int) or shell_group <= 1:
+        raise TmuxAgentError("owned shell process group is unavailable")
+    if not isinstance(terminal_session, int) or terminal_session <= 1:
+        raise TmuxAgentError("owned terminal session is unavailable")
+    if not isinstance(tty, str) or not tty:
+        raise TmuxAgentError("owned pane terminal is unavailable")
+    flags = os.O_RDONLY | getattr(os, "O_NOCTTY", 0)
+    try:
+        descriptor = os.open(tty, flags)
+        try:
+            foreground = os.tcgetpgrp(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        # BSD/macOS permits TIOCGPGRP only from a process in the terminal's
+        # session. Ask the kernel through ps for the authenticated shell PID.
+        try:
+            rendered = subprocess.check_output(
+                ["ps", "-o", "tpgid=", "-p", str(shell_group)],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            foreground = int(rendered)
+        except (OSError, subprocess.SubprocessError, ValueError) as fallback_exc:
+            raise TmuxAgentError(
+                f"could not inspect owned pane foreground group: {exc}"
+            ) from fallback_exc
+    if foreground <= 1:
+        raise TmuxAgentError("owned pane foreground group is invalid")
+    try:
+        foreground_session = os.getsid(foreground)
+    except ProcessLookupError as exc:
+        raise TmuxAgentError("owned pane foreground group disappeared") from exc
+    if foreground_session != terminal_session:
+        raise TmuxAgentError("owned pane foreground group escaped its terminal session")
+    return shell_group, foreground
+
+
+def send_shell_command(
+    *,
+    name: str,
+    command: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    client: TmuxClient | None = None,
+    foreground_timeout: float = 5.0,
+) -> int:
+    """Atomically admit one command only while the owned shell has the TTY."""
+
+    if foreground_timeout <= 0:
+        raise TmuxAgentError("foreground timeout must be positive")
+    _validate_terminal_message(command)
+    if "\n" in command or "\r" in command:
+        raise TmuxAgentError("shell command must be one physical line")
+    paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    tmux, session = require_owned_session(metadata, client)
     lock_fd = os.open(paths.run_dir, os.O_RDONLY)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        commands = [
-            "load-buffer",
-            "-b",
-            buffer_name,
-            "-",
-            ";",
-            "paste-buffer",
-            "-p",
-            "-d",
-            "-b",
-            buffer_name,
-            "-t",
-            target,
-        ]
-        tmux.run(commands, input_bytes=message.encode("utf-8"))
-        if enter:
-            # Full-screen editors such as Claude Code consume bracketed paste
-            # asynchronously. An Enter in the same tmux command can arrive
-            # before the editor has closed the paste transaction and becomes
-            # another newline in the buffer. Submit as a later terminal event.
-            time.sleep(0.1)
-            tmux.run(["send-keys", "-t", target, "Enter"])
+        shell_group, foreground = _owned_terminal_foreground_group(metadata)
+        if foreground != shell_group:
+            raise UnexpectedForegroundError(
+                f"owned shell is busy with foreground process group {foreground}"
+            )
+        _paste_terminal_message(tmux, metadata, session, command, enter=True)
+        deadline = time.monotonic() + foreground_timeout
+        while time.monotonic() < deadline:
+            current_shell, current_foreground = _owned_terminal_foreground_group(metadata)
+            if current_shell != shell_group:
+                raise TmuxAgentError("owned shell process group changed during dispatch")
+            if current_foreground != shell_group:
+                return current_foreground
+            time.sleep(0.02)
+        raise TmuxAgentError("dispatched command did not acquire the pane foreground")
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def shell_foreground_process_groups(
+    *,
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    client: TmuxClient | None = None,
+) -> tuple[int, int]:
+    """Return authenticated `(shell_pgid, foreground_pgid)` for an owned lane."""
+
+    _paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    require_owned_session(metadata, client)
+    return _owned_terminal_foreground_group(metadata)
+
+
+def stop_foreground_job(
+    *,
+    name: str,
+    namespace: str = DEFAULT_NAMESPACE,
+    state_dir: str | os.PathLike[str] | None = None,
+    grace: float = 2.0,
+    expected_process_group: int,
+    client: TmuxClient | None = None,
+) -> dict[str, Any]:
+    """Stop the authenticated foreground job while retaining its shell lane."""
+
+    if grace < 0:
+        raise TmuxAgentError("grace must be non-negative")
+    paths, metadata = load_run(name=name, namespace=namespace, state_dir=state_dir)
+    require_owned_session(metadata, client)
+    lock_fd = os.open(paths.run_dir, os.O_RDONLY)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        shell_group, foreground = _owned_terminal_foreground_group(metadata)
+        if foreground == shell_group:
+            raise TmuxAgentError("owned shell has no foreground job to stop")
+        if foreground != expected_process_group:
+            raise TmuxAgentError(
+                "owned foreground job disagrees with admitted provider generation: "
+                f"expected {expected_process_group}, observed {foreground}"
+            )
+        try:
+            os.killpg(foreground, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + grace
+        while _process_group_exists(foreground) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if _process_group_exists(foreground):
+            try:
+                os.killpg(foreground, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if not _process_group_exists(foreground):
+                current_shell, current_foreground = _owned_terminal_foreground_group(metadata)
+                if current_shell == shell_group and current_foreground == shell_group:
+                    return {"state": "shell_idle", "stopped_process_group": foreground}
+            time.sleep(0.02)
+        raise TmuxAgentError(
+            f"foreground job did not return control to owned shell: {foreground}"
+        )
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)

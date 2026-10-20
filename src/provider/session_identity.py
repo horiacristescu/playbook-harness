@@ -288,8 +288,10 @@ def resolve_command_session_identity(
     ]
     if len(native) != 1:
         if native:
+            sources = ", ".join(name for name, _provider in native)
             raise NativeSessionIdentityError(
-                "multiple provider-native session sources are ambiguous"
+                "multiple provider-native session sources are ambiguous: "
+                f"{sources}; PLAYBOOK_PROVIDER is absent"
             )
         raise NativeSessionIdentityError(
             "provider-qualified interactive session identity is unavailable"
