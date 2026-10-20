@@ -1,5 +1,5 @@
 {
-  "commit": "25430912e22893e723464a875d062d4b6c89f5cd",
+  "commit": "c73593832acfbb3154814831b3e41a7cfc128ed7",
   "files": [
     {
       "destination": "LICENSE",
@@ -208,7 +208,7 @@
     {
       "destination": "bin/pb-codex",
       "mode": "0755",
-      "sha256": "15441b0acf1772d4891023250f512c0e7e260fd86df4424de5bdd83f7332f10d",
+      "sha256": "dc18bb06b9d0101793a486e5b32e0e850cb9e96828b0cb9be8cd6b9989efca24",
       "source": "bin/playbook-codex"
     },
     {
@@ -286,7 +286,7 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "73a35c2933cbc6d0e78864a44e53ee16b6010c75c79960318d238507eaa9d791",
+      "sha256": "ddc41fe26f2283fd12d4aa5139de46baf41ccd430fff3e3617c0731df0940b64",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
@@ -334,7 +334,7 @@
     {
       "destination": "docs/sessions-and-monitoring.md",
       "mode": "0644",
-      "sha256": "cb9fe487875cb38d211bcd02ec82567be1d5fd0d437e07c5e81ea5f58b9d7e38",
+      "sha256": "4f9e4a91d93b39eda506ed5d2cb2b216e08d68f0bd5c8eec6e78a00943f7de99",
       "source": "docs/sessions-and-monitoring.md"
     },
     {
@@ -388,7 +388,7 @@
     {
       "destination": "scripts/codex-loop.py",
       "mode": "0644",
-      "sha256": "0c21c5f8ef5db01132bf9ccbb7d1b23e5f5d9fa56a770fa73c5f7ee8b7451ca5",
+      "sha256": "f426ced56ef8073b13c2cae0c740d6f489a3b6117a40afc190d00299c18aea2a",
       "source": "scripts/codex-loop.py"
     },
     {
@@ -526,7 +526,7 @@
     {
       "destination": "skills/monitor/SKILL.md",
       "mode": "0644",
-      "sha256": "96c01048be1737b875422d184478719ff3972cc91bdfac2f224419fc09a29af0",
+      "sha256": "8afe83ae135d40fcdf57996a1e0abb0e96dd07ed2b76cfa6e9e877798cd06645",
       "source": "skills/monitor/SKILL.md"
     },
     {

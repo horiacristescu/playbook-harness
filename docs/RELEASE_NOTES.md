@@ -1,5 +1,19 @@
 # Playbook Harness release notes
 
+## Codex reminder loop follows one session — 2026-10-20
+
+`pb-codex loop` is now armed against one session ID and stops when the window
+showing that session closes. Before, any Codex window open in the same
+directory kept it running, so a lane could keep a closed monitor's loop alive.
+
+`pb-codex` now starts windows with `codex --no-daemon`. The session then runs
+inside its window, and the loop binds to that window from the arming command.
+A plain `codex` window shares Codex's background server, which does not reveal
+which window shows a session, so the loop refuses there and says how to move:
+quit the window, run `pb-codex fork <session-id>`, and arm again. A
+`pb-codex resume` of that session waits about 30 minutes, until the server
+lets go of it. Start Codex monitors with `pb-codex`.
+
 ## Lanes keep their shell, restore after a reboot, Codex reminder loop — 2026-10-20
 
 A managed session is now a lane: a shell in a Playbook-owned tmux window, with

@@ -124,20 +124,38 @@ sandboxed start refuses and asks for escalation. `list` and `stop` work from
 inside the sandbox.
 
 The loop uses the current `CODEX_THREAD_ID`. From another shell, supply
-`--thread <codex-thread-uuid>` explicitly. A detached local process calls
+`--thread <codex-thread-uuid>` explicitly; the loop then binds to a window
+that was resumed with that ID, or to `--owner <pid>`. A detached local process calls
 `codex queue` at each interval; Codex handles queued input after its current
 turn. The first reminder arrives after one interval. `list` shows send counts
 and the last error. Long Codex turns can leave several reminders queued.
 
-A loop lives only as long as the Codex window it was started from. Codex keeps
-a conversation open in its background service after the window closes, and it
-would keep answering queued reminders with nobody watching. So the loop finds
-the window at start and stops when that window exits. A window that resumed
-the thread by ID is matched exactly. Otherwise, every Codex window working in
-the same directory counts, and the loop runs until the last of them closes.
-Pass `--owner <pid>` when it cannot find the window. Arming again on the same
-thread replaces the earlier loop. A restarted session starts with no loop and
-must arm a new one, and so must a session after a reboot.
+A loop is armed against one session ID and lives only as long as the window
+showing that session. Codex keeps a conversation open in its background server
+after the window closes, and it would keep answering reminders with nobody
+watching. Other Codex windows in the same project do not count; a monitor and
+its lanes share a directory, and a lane must not keep a closed monitor's loop
+alive.
+
+To find the window, the loop needs a session that runs inside it. `pb-codex`
+starts windows that way (it adds `codex --no-daemon`). The arming command then
+runs under its own window, and the loop binds to that process. A plain `codex`
+window shares Codex's background server instead, so nothing ties its commands to
+a window, and the loop refuses there. Move such a session with:
+
+```bash
+pb-codex fork <session-id>
+```
+
+Quit the old window first. The fork carries the conversation into a new session
+the loop can follow; arm it again from there. `pb-codex resume <session-id>`
+is refused for about 30 minutes after the old window closes, because the
+background server still holds the session. As a last resort, pass
+`--owner <pid>` with the PID of the window's `codex` process.
+
+Arming again on the same session replaces the earlier loop. A restarted session
+starts with no loop and must arm a new one, and so must a session after a
+reboot.
 
 ## Recover after interruption
 

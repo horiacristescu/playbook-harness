@@ -1,10 +1,13 @@
 """Send a recurring prompt to one open Codex session without tmux.
 
-Codex threads live in a shared app-server daemon that keeps them loaded, and
-keeps running queued prompts, after the terminal window closes. A loop is
-therefore bound to the Codex window processes open on its thread at start and
-stops when the last of them exits, so a closed session is never driven
-headless and a restarted session does not inherit a stale loop.
+A loop is armed against one session ID and lives exactly as long as the Codex
+window showing that session. Codex can keep a thread loaded in its shared
+background server after the window closes and answer queued prompts with
+nobody watching, so the loop finds the session's own window at start and
+stops when that window exits. A window started with `--no-daemon` (as
+`pb-codex` does) runs its session in-process, so the arming command's parent
+chain names it exactly; a window resumed with the session ID in its arguments
+is the only other exact match.
 """
 
 from __future__ import annotations
@@ -36,6 +39,17 @@ SANDBOXED = (
     "pb-codex loop must start outside the Codex sandbox: its background process "
     "calls `codex queue`, which the sandbox blocks. Run the same command again "
     "with escalated permissions."
+)
+
+
+NO_WINDOW = (
+    "cannot tell which Codex window shows session {thread}. A window that "
+    "shares Codex's background server does not reveal its session. Quit that "
+    "window, run `pb-codex fork {thread}` to continue the conversation in a "
+    "window the loop can follow, and arm the loop again there (`pb-codex resume` "
+    "is refused for about 30 minutes, while the server still holds the session). "
+    "Start monitors with `pb-codex` (or `codex --no-daemon`) to avoid this. Or "
+    "pass --owner <pid of that window's codex process>."
 )
 
 
@@ -86,67 +100,70 @@ def process_started(pid: int) -> str | None:
     return result.stdout.strip() or None
 
 
-def process_table() -> list[dict]:
-    """List processes that have a terminal: pid, executable, arguments, and cwd."""
-    result = subprocess.run(["ps", "-axo", "pid=,tty=,comm="], capture_output=True, text=True, timeout=10, check=True)
-    rows = []
-    for line in result.stdout.splitlines():
-        parts = line.split(None, 2)
-        if len(parts) != 3 or parts[1] in {"??", "?", "-"} or Path(parts[2]).name != "codex":
-            continue
-        pid = int(parts[0])
-        argv = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5, check=False)
-        rows.append({"pid": pid, "command": argv.stdout.strip(), "cwd": process_cwd(pid)})
-    return rows
-
-
-def process_cwd(pid: int) -> str | None:
-    proc = Path(f"/proc/{pid}/cwd")
-    if proc.exists():
-        try:
-            return os.readlink(proc)
-        except OSError:
-            return None
+def process_row(pid: int) -> dict | None:
+    """Return one process's parent, terminal, executable, and command line."""
     try:
-        result = subprocess.run(["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"], capture_output=True, text=True, timeout=5, check=False)
+        head = subprocess.run(["ps", "-o", "ppid=,tty=,comm=", "-p", str(pid)], capture_output=True, text=True, timeout=5, check=False)
+        argv = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired):
         return None
-    for line in result.stdout.splitlines():
-        if line.startswith("n"):
-            return line[1:]
+    parts = head.stdout.strip().split(None, 2)
+    if len(parts) != 3:
+        return None
+    return {"pid": pid, "ppid": int(parts[0]), "tty": parts[1], "comm": parts[2], "command": argv.stdout.strip()}
+
+
+def is_window(row: dict) -> bool:
+    """A Codex window is an interactive `codex` process attached to a terminal."""
+    if row["tty"] in {"??", "?", "-"} or Path(row["comm"]).name != "codex":
+        return False
+    words = row["command"].split()[1:]
+    first = next((word for word in words if not word.startswith("-")), None)
+    return first not in NOT_A_WINDOW
+
+
+def window_in_ancestry(pid: int, read=process_row) -> int | None:
+    """Return the Codex window among `pid` and its ancestors, if any."""
+    seen = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        row = read(pid)
+        if row is None:
+            return None
+        if is_window(row):
+            return pid
+        pid = row["ppid"]
     return None
 
 
-def codex_windows(thread: str, cwd: str, rows: list[dict]) -> list[int]:
-    """Pick the Codex windows that can be showing `thread`.
-
-    The daemon does not say which window a thread belongs to, so a window
-    resumed by thread ID is an exact match; otherwise every window working in
-    this directory counts, and the loop lives while any of them does.
-    """
-    here = os.path.realpath(cwd)
-    exact, nearby = [], []
-    for row in rows:
-        words = row["command"].split()[1:]
-        first = next((word for word in words if not word.startswith("-")), None)
-        if first in NOT_A_WINDOW:
-            continue
-        named = {token.lower() for token in UUID_TOKEN.findall(" ".join(words))}
-        if thread.lower() in named:
-            exact.append(row["pid"])
-        elif not named and row["cwd"] and window_directory(row["cwd"], words) == here:
-            nearby.append(row["pid"])
-    return exact or nearby
+def process_table() -> list[dict]:
+    """List every process running an executable named `codex`."""
+    result = subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True, text=True, timeout=10, check=True)
+    rows = []
+    for line in result.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2 and Path(parts[1]).name == "codex":
+            row = process_row(int(parts[0]))
+            if row is not None:
+                rows.append(row)
+    return rows
 
 
-def window_directory(cwd: str, words: list[str]) -> str:
-    """Return the directory a Codex window works in, honoring -C / --cd."""
-    for index, word in enumerate(words):
-        if word in {"-C", "--cd"} and index + 1 < len(words):
-            return os.path.realpath(os.path.join(cwd, words[index + 1]))
-        if word.startswith("--cd="):
-            return os.path.realpath(os.path.join(cwd, word.removeprefix("--cd=")))
-    return os.path.realpath(cwd)
+def resumed_windows(thread: str, rows: list[dict]) -> list[int]:
+    """Return the windows whose own arguments name this session ID."""
+    return [
+        row["pid"] for row in rows
+        if is_window(row) and thread.lower() in {token.lower() for token in UUID_TOKEN.findall(row["command"])}
+    ]
+
+
+def session_window(thread: str) -> list[int]:
+    """Find the window showing `thread`, matching only on the session ID."""
+    if os.environ.get("CODEX_THREAD_ID", "").lower() == thread.lower():
+        window = window_in_ancestry(os.getppid())
+        if window is not None:
+            return [window]
+    return resumed_windows(thread, process_table())
 
 
 def owners_alive(owners: list[dict], recheck: bool) -> bool:
@@ -240,14 +257,11 @@ def start(interval: int, interval_text: str, message: str, thread: str, owner_pi
     if sandboxed():
         raise RuntimeError(SANDBOXED)
     if not owner_pids:
-        owner_pids = codex_windows(thread, os.getcwd(), process_table())
+        owner_pids = session_window(thread)
     owners = [{"pid": pid, "started": process_started(pid)} for pid in owner_pids]
     owners = [owner for owner in owners if owner["started"]]
     if not owners:
-        raise ValueError(
-            f"no open Codex window found for thread {thread} in {os.getcwd()}; run this from that "
-            "session's working directory, or pass --owner <pid of its codex process>"
-        )
+        raise ValueError(NO_WINDOW.format(thread=thread))
     root = state_root()
     for previous in running_loops(root):
         if previous.get("thread") == thread:

@@ -36,4 +36,32 @@ unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
 export PLAYBOOK_PROVIDER="codex"
 export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
 
+# A window started with --no-daemon runs its session in its own process, so its
+# hooks and commands (and `pb-codex loop`) run under this window with this
+# environment. Under the shared background server they would not.
+opens_window() {
+    local first=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-daemon|--remote|--remote=*) return 1 ;;
+            --) break ;;
+            -c|--config|--enable|--disable|--remote-auth-token-env|-i|--image|-m|--model|\
+            --local-provider|-p|--profile|-s|--sandbox|-C|--cd|--add-dir|-a|--ask-for-approval)
+                shift ;;
+            -*) ;;
+            *) [ -n "$first" ] || first="$1" ;;
+        esac
+        [ $# -gt 0 ] && shift
+    done
+    case "$first" in
+        agents|exec|e|review|login|logout|mcp|mcp-server|plugin|app-server|remote-control|app|\
+        completion|update|doctor|sandbox|debug|apply|a|queue|archive|delete|migrate-rollouts|\
+        unarchive|cloud|exec-server|features|help|proxy) return 1 ;;
+    esac
+    return 0
+}
+
+if opens_window "$@"; then
+    exec codex --no-daemon "$@"
+fi
 exec codex "$@"
