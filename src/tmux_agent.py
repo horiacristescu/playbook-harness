@@ -24,7 +24,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 
 SCHEMA = 1
@@ -1120,6 +1120,7 @@ def start_run(
     environment: Mapping[str, str] | None = None,
     model: str | None = None,
     client: TmuxClient | None = None,
+    unset_environment: Iterable[str] = (),
 ) -> dict[str, Any]:
     tmux = TmuxClient() if client is None else client
     tmux.require()
@@ -1130,6 +1131,10 @@ def start_run(
     for key, value in overrides.items():
         if not ENVIRONMENT_RE.fullmatch(key) or "\0" in value:
             raise TmuxAgentError(f"invalid environment override: {key!r}")
+    removed = sorted(set(unset_environment) - set(overrides))
+    for key in removed:
+        if not ENVIRONMENT_RE.fullmatch(key):
+            raise TmuxAgentError(f"invalid environment name to unset: {key!r}")
 
     server_lock_fd = os.open(paths.root, os.O_RDONLY)
     fcntl.flock(server_lock_fd, fcntl.LOCK_EX)
@@ -1158,6 +1163,18 @@ def start_run(
             "state": "starting",
         }
         atomic_write_json(paths.meta, metadata)
+        # tmux carries a command in one bounded message, so a large variable
+        # passed with `new-session -e` fails the whole launch ("command too
+        # long"). The runner reads this private file and deletes it at once.
+        child_environment = {}
+        inherited_path = os.environ.get("PATH")
+        if inherited_path is not None:
+            child_environment["PATH"] = inherited_path
+        child_environment.update(overrides)
+        atomic_write_json(
+            paths.environment,
+            {"schema": SCHEMA, "set": child_environment, "unset": removed},
+        )
     except Exception:
         fcntl.flock(server_lock_fd, fcntl.LOCK_UN)
         os.close(server_lock_fd)
@@ -1182,11 +1199,6 @@ def start_run(
     setup_complete = False
     try:
         new_session = ["new-session", "-d", "-s", session, "-c", str(working_directory)]
-        inherited_path = os.environ.get("PATH")
-        if inherited_path is not None:
-            new_session.extend(["-e", f"PATH={inherited_path}"])
-        for key, value in overrides.items():
-            new_session.extend(["-e", f"{key}={value}"])
         new_session.extend(["--", *runner])
         tmux.run(new_session)
         session_created = True
@@ -1241,12 +1253,41 @@ def start_run(
         raise
 
 
+def _take_child_environment(path: Path) -> dict[str, str]:
+    """Read the launch environment once and delete it: it can hold secrets."""
+
+    try:
+        value = read_json(path, kind="runner environment")
+    finally:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    assignments = value.get("set")
+    removed = value.get("unset", [])
+    if (
+        not isinstance(assignments, dict)
+        or not all(isinstance(key, str) and isinstance(item, str) for key, item in assignments.items())
+        or not isinstance(removed, list)
+        or not all(isinstance(key, str) for key in removed)
+    ):
+        raise TmuxAgentError("runner environment is malformed")
+    environment = {key: item for key, item in os.environ.items() if key not in removed}
+    environment.update(assignments)
+    return environment
+
+
 def _runner_main(meta_path: Path, configured_path: Path, ready_path: Path) -> int:
     paths = RunPaths(
         root=meta_path.parent.parent.parent,
         namespace=meta_path.parent.parent.name,
         name=meta_path.parent.name,
     )
+    try:
+        child_environment = _take_child_environment(paths.environment)
+    except (OSError, ValueError, TmuxAgentError) as exc:
+        _write_start_failure(paths, f"runner environment is unreadable: {exc}")
+        return 125
     deadline = time.monotonic() + 30.0
     while not configured_path.exists():
         if time.monotonic() >= deadline:
@@ -1287,6 +1328,7 @@ def _runner_main(meta_path: Path, configured_path: Path, ready_path: Path) -> in
         child = subprocess.Popen(
             shim,
             cwd=cwd,
+            env=child_environment,
             preexec_fn=os.setpgrp,
             pass_fds=(start_read_fd, status_write_fd),
         )
@@ -1671,6 +1713,10 @@ class RunPaths:
     @property
     def configured(self) -> Path:
         return self.run_dir / "tmux.configured"
+
+    @property
+    def environment(self) -> Path:
+        return self.run_dir / "environment.json"
 
 
 def reserve_run(paths: RunPaths) -> None:

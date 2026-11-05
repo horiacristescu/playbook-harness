@@ -30,6 +30,20 @@ _IDENTITY_ENV_NAMES = frozenset(
         "PLAYBOOK_SESSION_NAME",
     }
 )
+# Set by a running agent for its own children. A new agent that inherits them
+# believes it is that agent's child: Claude refuses to start under CLAUDECODE,
+# or runs as a child session tied to the parent's messaging socket.
+PARENT_RUNTIME_ENV_NAMES = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_CHILD_SESSION",
+    "CLAUDE_CODE_ENTRYPOINT",
+    "CLAUDE_CODE_MESSAGING_SOCKET",
+    "CLAUDE_CODE_MESSAGING_TOKEN",
+    "CLAUDE_CODE_SESSION_ATTENDED",
+    "CLAUDE_PID",
+    "CODEX_SANDBOX",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+)
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
 
 
@@ -313,9 +327,13 @@ def require_matching_session_id(hook_id: object, command_id: object) -> str:
 
 
 def scrub_inherited_session_identity(environ: Mapping[str, str]) -> dict[str, str]:
-    """Copy an environment without a parent agent's identity variables."""
+    """Copy an environment without a parent agent's identity or runtime markers."""
 
-    return {key: value for key, value in environ.items() if key not in _IDENTITY_ENV_NAMES}
+    return {
+        key: value
+        for key, value in environ.items()
+        if key not in _IDENTITY_ENV_NAMES and key not in PARENT_RUNTIME_ENV_NAMES
+    }
 
 
 def child_command_environment(

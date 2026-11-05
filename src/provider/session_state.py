@@ -34,6 +34,7 @@ _OPTIONAL_FIELDS = frozenset(
         "tmux_pane",
         "last_started_at",
         "stopped_at",
+        "lost_at",  # equals stopped_at when that stop was its lane's body dying
         "destroyed_at",
         "body_id",
         "sandbox",
@@ -807,7 +808,7 @@ def _validate_record(value: object, expected: SessionKey | None = None) -> dict:
     if not isinstance(value.get("created_at"), str) or not value["created_at"]:
         raise SessionStateError("session.json created_at must be a nonempty string")
     for field in ("name", "project", "resume_cwd", "tmux_session", "tmux_pane", "body_id",
-                  "last_started_at", "stopped_at", "destroyed_at"):
+                  "last_started_at", "stopped_at", "lost_at", "destroyed_at"):
         if field in value and value[field] is not None and not isinstance(value[field], str):
             raise SessionStateError(f"session.json {field} must be a string or null")
     for field in ("managed", "sandbox"):

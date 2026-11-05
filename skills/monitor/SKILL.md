@@ -93,15 +93,15 @@ pb-session adopt claude:<native-id> --name lane-x
 
 Have the user exit the original session before adoption. Adoption is same-project and trusts that exit; it does not prove liveness. Never guess identity from timestamps. Confirm status and visible context before steering.
 
-A reboot destroys the tmux boxes but not the session records, this board, or the providers' saved conversations. The monitor usually runs outside tmux, so it comes back first. The user opens one terminal in the project and runs:
+A reboot destroys the tmux boxes but not the session records, this board, or the providers' saved conversations. The monitor usually runs outside tmux, for scrollback and selection. The user opens one terminal in the project and runs:
 
 ```bash
-pb-tasks resume monitor
+pb-session restore all
 ```
 
-It resumes the conversation that owns the one open monitor task, with a recovery prompt, and refuses when several are open; `pb-tasks resume N` names the task instead. Any task's conversation comes back the same way, and `pb-tasks resume` alone lists open tasks with their sessions.
+Every lane whose agent died comes back in a new lane under its name, then this monitor comes back in that terminal with a recovery prompt. `pb-session restore` alone lists the project's sessions by name; `pb-session restore NAME` brings one back. Asked to restore from inside an agent, run the same command: lanes come back, but a plain session such as the monitor stays put, and the output names the command for the user's terminal. Relay it; don't adopt the monitor into a lane, which is for good.
 
-Then recover the lanes with `pb-session list --all` and `pb-session status NAME`. A reboot closes every lane but keeps its last conversation. `pb-session resume NAME` builds a new lane with the same name and resumes that conversation in it. Compare the native ID that status reports with the one on the board first: a swap moves a lane to a new conversation. `pb-session resume provider:native-id` resumes an exact conversation instead. Resume within the user's existing authorization, preserve stopped conversations for inspection, confirm identity and model, update the recovery gate, then re-arm watching. Inside a managed lane, `$PLAYBOOK_SESSION_NAME` holds its lane name.
+Then check each lane against its recovery details below. A reboot closes every lane but keeps its last conversation. `pb-session resume NAME` builds a new lane with the same name and resumes that conversation in it. Compare the native ID that status reports with the one on the board first: a swap moves a lane to a new conversation. `pb-session resume provider:native-id` resumes an exact conversation instead. Resume within the user's existing authorization, preserve stopped conversations for inspection, confirm identity and model, update the recovery gate, then re-arm watching. Inside a managed lane, `$PLAYBOOK_SESSION_NAME` holds its lane name.
 
 ## Known limits
 

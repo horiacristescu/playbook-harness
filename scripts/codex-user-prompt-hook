@@ -42,6 +42,18 @@ def main() -> int:
     # Validate the entire state boundary before chat-log mutation.
     session_state_dir(project_root, session_id)
     append_prompt_to_chat_log(project_root, session_id, prompt)
+    if os.environ.get("PLAYBOOK_SESSION_NAME", "").strip():
+        # Codex has no start hook: the first prompt records the launch name.
+        from provider.session_state import SessionKey
+        from session_cli import claim_launch_name
+        from tasks.core import resolve_agent_dir
+
+        try:
+            claim_launch_name(
+                resolve_agent_dir(project_root), SessionKey.from_values("codex", session_id)
+            )
+        except Exception as exc:  # noqa: BLE001 - never block the prompt
+            print(f"Playbook: session name not recorded: {exc}", file=sys.stderr)
     return 0
 
 

@@ -1,5 +1,5 @@
 {
-  "commit": "c73593832acfbb3154814831b3e41a7cfc128ed7",
+  "commit": "a56a3cb62de4ebe6e458b5973b915893c9a3b926",
   "files": [
     {
       "destination": "LICENSE",
@@ -202,13 +202,13 @@
     {
       "destination": "bin/pb-claude",
       "mode": "0755",
-      "sha256": "0f66abbcaf07279ccbf5e3c64b21e470772a466ab83d2e3a63c5826b85c1edf4",
+      "sha256": "d8c38d0a26f0e0cf921c3d4a4270bdb6affeeaf2b8bfdb19868bfb5f55c5ccc2",
       "source": "bin/playbook-claude"
     },
     {
       "destination": "bin/pb-codex",
       "mode": "0755",
-      "sha256": "dc18bb06b9d0101793a486e5b32e0e850cb9e96828b0cb9be8cd6b9989efca24",
+      "sha256": "222854afe3be81f0b264a1e35b02bfebde3842b4a57412e6c293df4dbce695ec",
       "source": "bin/playbook-codex"
     },
     {
@@ -286,13 +286,13 @@
     {
       "destination": "docs/RELEASE_NOTES.md",
       "mode": "0644",
-      "sha256": "ddc41fe26f2283fd12d4aa5139de46baf41ccd430fff3e3617c0731df0940b64",
+      "sha256": "b8010749f325c715e4e37de64999e41304e74081e23a06019a8e00e5480a562d",
       "source": "docs/RELEASE_NOTES.md"
     },
     {
       "destination": "docs/command-reference.md",
       "mode": "0644",
-      "sha256": "5c5aa108f208381040c5998996c0ab3cfd4909d010fc6a4996afc3a96fbfe276",
+      "sha256": "ce7aaef6fffe7d849edb036f889259c5d8e61483ff53b8557b9c3739779659f5",
       "source": "docs/command-reference.md"
     },
     {
@@ -334,7 +334,7 @@
     {
       "destination": "docs/sessions-and-monitoring.md",
       "mode": "0644",
-      "sha256": "4f9e4a91d93b39eda506ed5d2cb2b216e08d68f0bd5c8eec6e78a00943f7de99",
+      "sha256": "61ad96ff560fa8be6354382dfe806ca2ebc443ee47fbe2238de14950f2fde706",
       "source": "docs/sessions-and-monitoring.md"
     },
     {
@@ -400,13 +400,13 @@
     {
       "destination": "scripts/codex-user-prompt-hook",
       "mode": "0755",
-      "sha256": "5914782ecb315ae03e690af5cb9594f6a12d99999e965dc57769c5078596e318",
+      "sha256": "687039e4c47e20c39327cefa0f0d0b050d7dc78d9576a76d7d82e7b6ae80e61e",
       "source": "scripts/codex-user-prompt-hook"
     },
     {
       "destination": "scripts/gate-echo-lib.sh",
       "mode": "0755",
-      "sha256": "64bba37ba1b3cb88149aee26ff57dee7f21ba995ad527fd0993ad5e8c46f81c3",
+      "sha256": "f045191299404260ed4ae3cebd52c1465b78e0243b4690f73c11487e007eb818",
       "source": "scripts/gate-echo-lib.sh"
     },
     {
@@ -442,7 +442,7 @@
     {
       "destination": "scripts/session-start-hook",
       "mode": "0755",
-      "sha256": "24676264f8c5250c07d408044d667b246141cbef41c90af63deac1933056d1ee",
+      "sha256": "8731cbad7fade8ec67fd47bc2215a503eea79b4a65e505030d38287a551d6e55",
       "source": "scripts/session-start-hook"
     },
     {
@@ -526,7 +526,7 @@
     {
       "destination": "skills/monitor/SKILL.md",
       "mode": "0644",
-      "sha256": "8afe83ae135d40fcdf57996a1e0abb0e96dd07ed2b76cfa6e9e877798cd06645",
+      "sha256": "f33ee398a2bdc65ae9320ee29adeb98684f9dbc4eb8da996a20d10f407027890",
       "source": "skills/monitor/SKILL.md"
     },
     {
@@ -742,13 +742,13 @@
     {
       "destination": "src/provider/session_identity.py",
       "mode": "0644",
-      "sha256": "dfe37d131ab5d41c7837b43ecf90107de9b4496f4f23610e8d0c8b9e206b6698",
+      "sha256": "2d2421e59f51622b32c527da45d9c5b471de8fb952caa125156303fd2a2a8ba5",
       "source": "src/provider/session_identity.py"
     },
     {
       "destination": "src/provider/session_state.py",
       "mode": "0644",
-      "sha256": "f694a9e1b680b0502e910d2040ef55de8305dfc461819ef770ba898140544199",
+      "sha256": "c5cb10864b3e996e1e7248e07ffd3441d58f055c9d5913790fa2600bcd687771",
       "source": "src/provider/session_state.py"
     },
     {
@@ -760,7 +760,7 @@
     {
       "destination": "src/session_cli.py",
       "mode": "0644",
-      "sha256": "9a20783c027983602abf301d5bfcc65904e8a646ab124f786abb182a5f1782eb",
+      "sha256": "2031e7801aacdd77dcbf2ed2fcb583da05ce9f281611da2cc2437462d0f34a9a",
       "source": "src/session_cli.py"
     },
     {
@@ -778,7 +778,7 @@
     {
       "destination": "src/tasks/cli.py",
       "mode": "0644",
-      "sha256": "ff736bf35b62c89776fc1668124a933e1a50ac0956abb53f720cc12bee49cc7f",
+      "sha256": "2c1488121542c1518c24db2cedd30ffb7b2ea134a6a9afc98eb89569f4b3b0e2",
       "source": "src/tasks/cli.py"
     },
     {
@@ -844,7 +844,7 @@
     {
       "destination": "src/tasks/resume.py",
       "mode": "0644",
-      "sha256": "557d9b1190f24541c5a35d4d7b5c3dc7a43a7f72f9fc3038d99486c586e87e92",
+      "sha256": "e91c9e0c62c9c503688580151b099dde48d52046230b756a35ca78a04a0d3c69",
       "source": "src/tasks/resume.py"
     },
     {
@@ -868,7 +868,7 @@
     {
       "destination": "src/tasks/template.py",
       "mode": "0644",
-      "sha256": "4769e2e85bba86f995849ac720adf75cf2e88e3208cf011dda2b203619dc202d",
+      "sha256": "579607b636cdeb0d5b55b52a8d64c06380c54fa5ce0c2ac30c2e5a61ff4ef0b5",
       "source": "src/tasks/template.py"
     },
     {
@@ -892,7 +892,7 @@
     {
       "destination": "src/tmux_agent.py",
       "mode": "0644",
-      "sha256": "aec71c4462a6fb1c29568290d233a337bbb910057a7ff067e3a4bc682e707269",
+      "sha256": "6900d850d4870770dfacfec45abe561fddd76d802c95480812cd3d64b3d740c2",
       "source": "src/tmux_agent.py"
     }
   ],

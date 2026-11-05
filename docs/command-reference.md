@@ -47,38 +47,42 @@ Activate one task, finish the active task after all gates close, or enter
 user-directed freehand mode.
 
 ```bash
-pb-tasks resume
-pb-tasks resume <N>
-pb-tasks resume monitor
+pb-session restore
+pb-session restore <name>
+pb-session restore all
 ```
 
-Bring back the agent conversation that last owned a task, for example after a
-reboot. The provider and session come from the task's `## Sessions` entry.
-With no argument it lists open tasks with their sessions and last messages.
-`monitor` resumes the one open monitor task and asks it to recover its lanes.
-`--print` shows the command instead of running it. Claude keeps saved
-conversations for 30 days by default.
+Bring sessions back after a dropped connection or a reboot. Every session
+has a name: `monitor` for a monitor, the task's short name for a session
+whose first task names it (`188-session-restore` gives `session-restore`),
+or whatever you gave it with `pb-claude --name X`, `pb-codex --name X` or
+`pb-session name X`. A session keeps its name; later tasks don't rename it.
+One name, one session: a newer session takes a name over unless the one
+holding it is still running, in which case it gets `X-2`. Bootstrap prints
+the current session's name.
 
-```bash
-pb-session restore [--days N] [--gates N] [--messages N] [--width N]
-pb-session restore <task-number|lane-name|id> [--force]
-```
+With no argument, restore lists this project's sessions from the last 10 days
+by name, with where each ran (`terminal` or `lane`) and whether it runs now.
+With a name, it brings that session back the way it was. A lane conversation
+comes back in its lane, or in a new lane with the same name if a reboot closed
+the old one. A plain session comes back in this terminal, through `pb-claude`
+or `pb-codex`. If its lane still runs it, restore attaches you to the lane.
+`all` brings back every lane whose agent died with its tmux server, then the
+monitor in this terminal. Lanes stopped on purpose are left alone, and running
+it twice starts nothing twice.
 
-After a reboot, when you do not know which task or session you were in. With
-no argument it prints a report of this project's conversations from the last
-10 days, newest first. Each block shows the handle to type, the provider, the
-lane name, the task with its last five checked gates, and your last five
-messages, one line each. `--days`, `--gates` and `--messages` change those
-numbers (0 hides gates or messages), and `--width` clips lines to N columns
-instead of the terminal width. The handle is the task number, or the start of
-the session ID for a session without a task; a lane name also works. With a
-handle it resumes that conversation in this terminal with the provider's own
-resume command. That includes a managed lane, which comes back as a plain
-session in this terminal. A session that looks open elsewhere needs `--force`.
-The report marks the sessions that are running now. It reads the project's
-chat log and keeps only sessions that the provider recorded as running in this
-project's folder or below it; any others logged here are named at the end with
-their folder.
+An agent can run restore too. Lanes come back as usual. A plain session stays
+put, because the agent has no terminal to give it. Restore prints the one
+command to type in yours instead (`pb-session adopt <name>` moves it into a
+lane for good).
+
+`--here` brings a lane conversation back in this terminal instead of its lane.
+`--force` resumes a session that looks open in another terminal. `--days`,
+`--gates`, `--messages` and `--width` shape the list. `pb-tasks restore`,
+`pb-tasks resume`, `pb-claude restore|resume` and `pb-codex restore` all run
+the same command. `pb-codex resume <id>` stays Codex's own resume. Resuming
+needs the provider's saved conversation; Claude deletes conversations older
+than 30 days by default.
 
 ```bash
 pb-tasks context <N>

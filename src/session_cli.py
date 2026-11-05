@@ -20,7 +20,13 @@ import tempfile
 import time
 from typing import Callable, Mapping
 
-from provider.session_identity import identity_spec, scrub_inherited_session_identity
+from provider.session_identity import (
+    PARENT_RUNTIME_ENV_NAMES,
+    NativeSessionIdentityError,
+    identity_spec,
+    resolve_command_session_identity,
+    scrub_inherited_session_identity,
+)
 from provider.sandbox import bypass_args, wrap_command_argv
 from provider.session_state import (
     LaneTransitionConflict,
@@ -29,7 +35,9 @@ from provider.session_state import (
     SessionKey,
     SessionStateError,
     _atomic_json,
+    _lanes_directory,
     _launches_directory,
+    _validate_lane,
     _validate_launch,
     _validate_managed_name,
     _validate_record,
@@ -83,6 +91,7 @@ _PROVIDER_AGENTS = {
     "pi": "pi",
     "omp": "omp",
 }
+_TERMINAL_LAUNCHERS = {"claude": "pb-claude"}
 
 _STARTUP_ATTENTION_PATTERNS = (
     (
@@ -371,6 +380,9 @@ def create_managed_lane_body(
             cwd=cwd,
             environment=managed_shell_environment(project, os.environ),
             model=None,
+            # A tmux server first started from inside an agent keeps that
+            # agent's markers in its baseline; the lane shell must not.
+            unset_environment=PARENT_RUNTIME_ENV_NAMES,
         )
         lane = transition_managed_lane(
             agent_dir,
@@ -509,6 +521,7 @@ def dispatch_provider_generation(
             "-u", "CLAUDE_CODE_SESSION_ID",
             "-u", "CODEX_THREAD_ID",
             "-u", "ANTIGRAVITY_CONVERSATION_ID",
+            *(flag for name in PARENT_RUNTIME_ENV_NAMES for flag in ("-u", name)),
             *(f"{key}={value}" for key, value in injected.items()),
             *argv,
         ]
@@ -797,6 +810,10 @@ def native_resume_route(
             resume_session_id=session_id,
         ),
     )
+    # In a terminal the person's own launcher runs it: it drops a parent
+    # agent's identity and markers (and pb-codex keeps the window off
+    # Codex's shared daemon, so a loop can follow it).
+    argv[0] = _TERMINAL_LAUNCHERS.get(argv[0], argv[0])
     return cwd, argv
 
 
@@ -1352,8 +1369,14 @@ def _lane_label(record: Mapping[str, object]) -> str:
     return str(record.get("name") or record["body_id"])
 
 
-def _mark_lane_session_stopped(agent_dir: Path, lane: ManagedLane, how: str) -> None:
-    """Record that the lane's bound conversation is no longer running there."""
+def _mark_lane_session_stopped(
+    agent_dir: Path, lane: ManagedLane, how: str, *, lost: bool = False
+) -> None:
+    """Record that the lane's bound conversation is no longer running there.
+
+    `lost`: the lane's body died under it (a reboot, a killed tmux server),
+    so `pb-session restore all` brings it back.
+    """
 
     key = _lane_key(lane.record)
     if key is None:
@@ -1365,11 +1388,15 @@ def _mark_lane_session_stopped(agent_dir: Path, lane: ManagedLane, how: str) -> 
     body_id = lane.record["body_id"]
     if record.get("state") != "running" or record.get("body_id") != body_id:
         return
+    now = _now()
+    enrich = {"state": "stopped", "stopped_at": now}
+    if lost:
+        enrich["lost_at"] = now
     _path, stopped = ensure_session_record(
         agent_dir,
         key.provider,
         key.session_id,
-        enrich={"state": "stopped", "stopped_at": _now()},
+        enrich=enrich,
         expected={"state": "running", "body_id": body_id},
         environment={},
     )
@@ -1411,7 +1438,7 @@ def _settle_lane_once(agent_dir: Path, lane: ManagedLane) -> ManagedLane:
         return lane
     if observed.get("state") in TERMINAL_BODY_STATES:
         lane = _lane_exited(agent_dir, lane, state="destroyed")
-        _mark_lane_session_stopped(agent_dir, lane, "natural")
+        _mark_lane_session_stopped(agent_dir, lane, "natural", lost=True)
         return lane
     if _dispatch_abandoned(lane.record):
         # Its controller died mid-dispatch (a closed terminal, a kill).
@@ -1712,11 +1739,17 @@ def _settle_record(
     elif not _terminal_body_state(record):
         return record
     body_id = record.get("body_id")
+    now = _now()
+    enrich = {"state": "stopped", "stopped_at": now}
+    # `destroy` refuses a lane that runs an agent: a destroyed lane under a
+    # running record means its body died.
+    if lane is not None and lane.record["state"] == "destroyed":
+        enrich["lost_at"] = now
     _path, stopped = ensure_session_record(
         agent_dir,
         key.provider,
         key.session_id,
-        enrich={"state": "stopped", "stopped_at": _now()},
+        enrich=enrich,
         expected={"state": "running", "body_id": body_id},
         environment={},
     )
@@ -1929,6 +1962,7 @@ def adopt_session(
     model: str | None = None,
     sandbox: bool = False,
     attach: bool = True,
+    prompt: str | None = None,
 ) -> ManagedLane:
     """Bring one ad_hoc session under managed control and resume it in a lane.
 
@@ -2024,6 +2058,7 @@ def adopt_session(
         f"{provider}:{record['session_id']}",
         model=model,
         attach=attach,
+        prompt=prompt,
     )
 
 
@@ -2065,6 +2100,164 @@ def rename_session(agent_dir: Path, address: str, new_name: str) -> dict:
             renamed_path.stat().st_mtime_ns,
         )
     return renamed
+
+
+def claim_session_name(
+    agent_dir: Path,
+    key: SessionKey,
+    wanted: str,
+    *,
+    keep_existing: bool = False,
+    running: Callable[[list[SessionKey]], set[SessionKey]] = _running_elsewhere,
+) -> str:
+    """Name session `key` `wanted`, or `wanted-2`, `-3`... while a live one holds it.
+
+    A name answers for the newest session that took it, so a stopped holder
+    gives it up: `pb-session restore monitor` brings back today's monitor, not
+    yesterday's. A live lane or a pending launch keeps its name. With
+    `keep_existing`, a session that already has a name keeps it.
+    """
+
+    base = _validate_managed_name(wanted)
+    assert base is not None
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        own_path = session_directory(agent_dir, key) / "session.json"
+        own = _validate_record(json.loads(own_path.read_text(encoding="utf-8")), key)
+        if keep_existing and own.get("name"):
+            return str(own["name"])
+        if own.get("state") == "destroyed":
+            raise SessionStateError("destroyed session cannot be renamed")
+        held: set[str] = set()
+        # Look without creating: naming must not plant lane or launch folders.
+        lanes = _lanes_directory(sessions) if (sessions / ".lanes").exists() else None
+        launches = _launches_directory(sessions) if (sessions / ".launches").exists() else None
+        own_lane: tuple[Path, dict] | None = None
+        for lane_path in lanes.glob("*.json") if lanes else ():
+            if lane_path.is_symlink() or not lane_path.is_file():
+                continue
+            lane = _validate_lane(json.loads(lane_path.read_text(encoding="utf-8")), lane_path)
+            if lane["state"] == "destroyed":
+                continue
+            if (lane["provider"], lane["session_id"]) == (key.provider, key.session_id):
+                own_lane = (lane_path, lane)
+            elif lane["name"]:
+                held.add(lane["name"])
+        for launch_path in launches.glob("*.json") if launches else ():
+            launch = _validate_launch(
+                json.loads(launch_path.read_text(encoding="utf-8")), launch_path
+            )
+            if launch.get("name"):
+                held.add(str(launch["name"]))
+        others = [
+            (path, record)
+            for path, record in list_session_records(agent_dir)
+            if path != own_path
+        ]
+        attempt = 1
+        while True:
+            suffix = "" if attempt == 1 else f"-{attempt}"
+            attempt += 1
+            name = base[: 64 - len(suffix)] + suffix
+            if name == own.get("name"):
+                return name
+            if name in held or name == RESTORE_ALL:
+                continue
+            holders = [
+                SessionKey.from_values(record["provider"], record["session_id"])
+                for _path, record in others
+                if record.get("name") == name
+            ]
+            if holders and running(holders):
+                continue
+            for holder in holders:
+                ensure_session_record(
+                    agent_dir,
+                    holder.provider,
+                    holder.session_id,
+                    enrich={"name": None},
+                    expected={"name": name},
+                    environment={},
+                )
+            named_path, named = ensure_session_record(
+                agent_dir,
+                key.provider,
+                key.session_id,
+                enrich={"name": name},
+                environment={},
+            )
+            if own_lane is not None and own_lane[1]["name"] != name:
+                # The lane answers to the same name: `pb-session attach <name>`.
+                lane_path, lane = own_lane
+                _atomic_json(lane_path, _validate_lane({**lane, "name": name}, lane_path))
+            break
+    old = own.get("name")
+    _append_session_chronology(
+        agent_dir,
+        named,
+        "rename",
+        f"named session {name}" if not old else f"renamed session from {old} to {name}",
+        old or "-",
+        name,
+        named_path.stat().st_mtime_ns,
+    )
+    return name
+
+
+def name_current_session(
+    agent_dir: Path,
+    new_name: str | None,
+    environ: Mapping[str, str] = os.environ,
+    *,
+    running: Callable[[list[SessionKey]], set[SessionKey]] = _running_elsewhere,
+) -> str:
+    """Name (or show the name of) the agent session this command runs in."""
+
+    try:
+        identity = resolve_command_session_identity(environ)
+    except NativeSessionIdentityError as exc:
+        raise SessionStateError(
+            "`pb-session name` names the agent session it runs in; run it inside that "
+            "session (or name another with `pb-session rename <address> <name>`): "
+            f"{exc}"
+        ) from exc
+    key = SessionKey.from_values(identity.provider, identity.session_id)
+    _path, record = ensure_session_record(agent_dir, key.provider, key.session_id)
+    if new_name is None:
+        name = record.get("name")
+        if not name:
+            return "This session: unnamed (`pb-session name <name>` names it)"
+    else:
+        name = claim_session_name(agent_dir, key, new_name, running=running)
+    note = "" if new_name in (None, name) else f"; {new_name} belongs to a running session"
+    return f"This session: {name} (after a drop: pb-session restore {name}){note}"
+
+
+def claim_launch_name(
+    agent_dir: Path, key: SessionKey, environ: Mapping[str, str] = os.environ
+) -> str | None:
+    """Record the name its launcher gave this session (`pb-claude --name X`), once.
+
+    Hooks call this as the session starts (Codex: at its first prompt), so the
+    name is there for `pb-session restore` even if the agent never
+    bootstraps. A session that already has a name keeps it.
+    """
+    wanted = environ.get("PLAYBOOK_SESSION_NAME", "").strip()
+    if not wanted:
+        return None
+    _path, record = ensure_session_record(agent_dir, key.provider, key.session_id)
+    if record.get("name"):
+        return str(record["name"])
+    return claim_session_name(agent_dir, key, wanted, keep_existing=True)
+
+
+def task_session_name(task_dir_name: str, *, monitor: bool) -> str:
+    """The name a session takes from the first task it activates."""
+
+    if monitor:
+        return "monitor"
+    short = task_dir_name.split("-", 1)[1] if "-" in task_dir_name else task_dir_name
+    short = re.sub(r"[^A-Za-z0-9._-]+", "-", short).strip("-._")[:64]
+    return short or f"task-{task_dir_name}"
 
 
 def destroy_session(agent_dir: Path, address: str) -> dict | ManagedLane:
@@ -2288,6 +2481,17 @@ def _parser() -> argparse.ArgumentParser:
     )
     swap.add_argument("--model")
     swap.add_argument("--attach", action="store_true")
+    naming = commands.add_parser(
+        "name",
+        help="name the session this runs in (no name: show it)",
+        description=(
+            "Name the agent session this command runs in, so that after a dropped "
+            "connection `pb-session restore <name>` brings it back. A stopped session "
+            "with the same name gives it up; a running one keeps it (this one gets "
+            "<name>-2)."
+        ),
+    )
+    naming.add_argument("new_name", nargs="?")
     rename = commands.add_parser("rename", help="change only the human session name")
     rename.add_argument("address")
     rename.add_argument("new_name")
@@ -2298,27 +2502,37 @@ def _parser() -> argparse.ArgumentParser:
     destroy.add_argument("address")
     restore = commands.add_parser(
         "restore",
-        help="pick one of this project's recent conversations and resume it here",
+        help="bring a session back by name, the way it was (no name: list them)",
         description=(
-            "Without arguments, list the conversations this project's chat log saw "
-            "recently, newest first. With a task number (or the start of a session "
-            "ID), resume that conversation in this terminal with the provider's own "
-            "resume command."
+            "Without arguments, list this project's recent sessions by name, with "
+            "where each ran and whether it runs now. With a name, bring that session "
+            "back the way it was: a lane conversation in its lane (a new one under "
+            "the same name if the old one died), a plain session in this terminal. "
+            "Run by an agent, which has no terminal to hand over, a plain session "
+            "stays put and the command to type in your terminal is printed. "
+            "`all`: every lane whose agent died with its tmux server comes back in its "
+            "lane, then the monitor comes back."
         ),
     )
     restore.add_argument(
-        "selector", nargs="?", help="task number, lane name, or the start of a session ID"
+        "selector",
+        nargs="?",
+        help="the session's name (an unnamed one: the start of its ID), or `all`",
     )
     restore.add_argument(
         "--days", type=_count(1), default=10, help="how far back to look (default: 10)"
     )
     restore.add_argument(
-        "--gates", type=_count(0), default=5,
-        help="last checked gates shown per session (default: 5; 0 hides them)",
+        "--gates", type=_count(0), default=0,
+        help="last checked gates shown per session (default: 0)",
     )
     restore.add_argument(
-        "--messages", type=_count(0), default=5,
-        help="your last messages shown per session (default: 5; 0 hides them)",
+        "--messages", type=_count(0), default=0,
+        help="your last messages shown per session (default: 0)",
+    )
+    restore.add_argument(
+        "--here", action="store_true",
+        help="bring a lane conversation back in this terminal instead of its lane",
     )
     restore.add_argument(
         "--width", type=_count(40),
@@ -2330,28 +2544,246 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+_AGENT_MARKERS = (
+    "CLAUDECODE",
+    "CLAUDE_CODE_SESSION_ID",
+    "CODEX_THREAD_ID",
+    "CODEX_SANDBOX",
+    "ANTIGRAVITY_CONVERSATION_ID",
+    "PLAYBOOK_SESSION_ID",
+)
+
+
+def _has_terminal(environ: Mapping[str, str] = os.environ) -> bool:
+    """Whether this process can hand its terminal to a resumed agent.
+
+    Not from inside an agent's shell tool: even where it has a pseudo-terminal
+    (Codex), an agent started there would block that tool, not reach a person.
+    """
+    if any(environ.get(name) for name in _AGENT_MARKERS):
+        return False
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def lane_session_running(agent_dir: Path, key: SessionKey) -> bool:
+    """Whether a lane conversation's agent runs in its lane right now."""
+
+    try:
+        _path, record = resolve_session_record(agent_dir, f"{key.provider}:{key.session_id}")
+        if record.get("managed") is not True:
+            return False
+        lane = _lane_of_record(agent_dir, record)
+        if lane is not None:
+            lane = settle_lane(agent_dir, lane)
+        return _settle_record(agent_dir, record, lane).get("state") == "running"
+    except (OSError, ValueError, SessionStateError, TmuxAgentError):
+        return False
+
+
+def conversation_name(agent_dir: Path, record: Mapping[str, object]) -> str | None:
+    """What a conversation answers to: its own name, else its lane's.
+
+    A lane conversation takes the lane's name when its agent bootstraps;
+    until then (or if it never does) the lane it last ran in names it, unless
+    another session has since taken that name.
+    """
+    name = record.get("name")
+    if isinstance(name, str) and name:
+        return name
+    if record.get("managed") is not True:
+        return None
+    try:
+        lane = _lane_of_record(agent_dir, record)
+    except (OSError, ValueError, SessionStateError):
+        return None
+    if lane is None or _lane_key(lane.record) != _lane_key(record):
+        return None  # the lane went on to another conversation
+    name = lane.record.get("name")
+    if not (isinstance(name, str) and name):
+        return None
+    try:
+        _path, holder = resolve_session_record(agent_dir, name)
+    except SessionStateError:
+        return name
+    same = (holder.get("provider"), holder.get("session_id")) == (
+        record.get("provider"), record.get("session_id")
+    )
+    return name if same else None
+
+
+def resolve_conversation(agent_dir: Path, name: str) -> dict:
+    """The conversation `name` answers for: a session's own name, else its lane's."""
+    try:
+        return resolve_session_record(agent_dir, name)[1]
+    except SessionStateError:
+        try:
+            lane = _lane_or_none(agent_dir, name, include_destroyed=True)
+        except (OSError, ValueError, SessionStateError):
+            lane = None
+        key = None if lane is None else _lane_key(lane.record)
+        if key is None:
+            raise
+        return resolve_session_record(agent_dir, f"{key.provider}:{key.session_id}")[1]
+
+
+def _resume_pending(agent_dir: Path, key: SessionKey) -> bool:
+    """Whether a lane resume of `key` was typed and its agent has not bound yet."""
+    with sessions_root_lock(agent_dir, create=True) as sessions:
+        try:
+            assert_no_active_managed_resume(sessions, key)
+        except SessionStateError:
+            return True
+    return False
+
+
+def restore_in_lane(agent_dir: Path, project_root: Path, action, *, attach: bool) -> str:
+    """Carry out a `LaneRestore`; return what to tell the person."""
+    from tasks.resume import RESTORE_PROMPT
+
+    address = f"{action.key.provider}:{action.key.session_id}"
+    if action.mode == "attach":
+        _path, record = resolve_session_record(agent_dir, address)
+        lane = _lane_of_record(agent_dir, record)
+        if lane is None:
+            raise SessionStateError(f"{address} runs, but its lane is gone")
+        news = "is running in its lane"
+    else:
+        lane = resume_session(agent_dir, address, attach=False, prompt=RESTORE_PROMPT)
+        news = "is back, in its lane"
+    label = _lane_label(lane.record)
+    if attach:
+        _attach_lane(lane)
+        return ""
+    return f"{label} {news}. See it: pb-session attach {label}"
+
+
+RESTORE_ALL = "all"  # `pb-session restore all`; never a session's name
+
+
+def restore_all(
+    agent_dir: Path,
+    project_root: Path,
+    *,
+    now,
+    write: Callable[[str], None],
+    terminal: bool,
+    force: bool = False,
+    days: int | None = None,
+    running=None,
+    folder=None,
+):
+    """`pb-session restore all`: the setup as it was before the drop.
+
+    Each lane whose body died under its agent (a reboot, a killed tmux server)
+    comes back in a new lane under its name; lanes that still run, or were
+    stopped on purpose, are left alone. Then the monitor comes back the way
+    `pb-session restore monitor` would bring it: returned for the caller to
+    carry out last, since in this terminal it replaces this process.
+    """
+    from tasks import resume
+
+    probes = {
+        "running": running or resume.running_session_keys,
+        "folder": folder or resume.session_folder,
+    }
+    back: list[str] = []
+    pending: list[str] = []
+    returning: set[SessionKey] = set()
+    for _path, record in list_session_records(agent_dir):
+        if record.get("managed") is not True:
+            continue
+        key = SessionKey.from_values(record["provider"], record["session_id"])
+        if lane_session_running(agent_dir, key):  # settles it: a died body is marked lost
+            continue
+        address = f"{key.provider}:{key.session_id}"
+        try:
+            _path, record = resolve_session_record(agent_dir, address)
+        except SessionStateError:
+            continue
+        lost = record.get("lost_at")
+        if record.get("state") != "stopped" or lost is None or lost != record.get("stopped_at"):
+            continue
+        label = conversation_name(agent_dir, record) or key.session_id[:8]
+        returning.add(key)
+        if _resume_pending(agent_dir, key):  # an earlier restore typed it; its agent is starting
+            pending.append(label)
+            continue
+        try:
+            lane = resume_session(agent_dir, address, attach=False, prompt=resume.RESTORE_PROMPT)
+        except (SessionStateError, TmuxAgentError) as exc:
+            write(f"{label} did not come back: {exc}")
+            continue
+        back.append(_lane_label(lane.record))
+    if back:
+        write(f"Back in their lanes: {', '.join(back)}. See one: pb-session attach <name>")
+    if pending:
+        write(f"Already coming back: {', '.join(pending)}.")
+    if not back and not pending:
+        write("No lane to bring back: none died under its agent.")
+
+    sessions, _elsewhere = resume.restore_candidates(
+        agent_dir, project_root, now=now, days=days or resume.RESTORE_DAYS, **probes
+    )
+    try:
+        monitor = resume.find_restorable(
+            agent_dir, project_root, sessions, resume.MONITOR_SELECTOR, now=now, **probes
+        )
+        if monitor.key in returning:
+            return None  # a lane, already on its way back
+        if monitor.running and not monitor.lane_running and not force:
+            write(f"{monitor.lane or 'monitor'} is open already, in another terminal.")
+            return None
+        return resume.route_restore(
+            agent_dir, project_root, monitor, force=force, terminal=terminal
+        )
+    except resume.ResumeError as exc:
+        write(f"No monitor brought back: {exc}.")
+        return None
+
+
 def _restore(options: argparse.Namespace) -> int:
     from datetime import datetime, timezone
     import shutil
 
     from tasks.cli import find_project_root
-    from tasks.resume import ResumeError, exec_plan, run_restore
+    from tasks.resume import LaneRestore, ResumeError, exec_plan, run_restore
 
     project_root = find_project_root().resolve()
+    agent_dir = resolve_agent_dir(project_root)
+    terminal = _has_terminal()
+    now = datetime.now(timezone.utc)
     try:
-        plan = run_restore(
-            resolve_agent_dir(project_root),
-            project_root,
-            options.selector,
-            now=datetime.now(timezone.utc),
-            write=print,
-            days=options.days,
-            force=options.force,
-            width=options.width or shutil.get_terminal_size((100, 24)).columns,
-            messages=options.messages,
-            gates=options.gates,
-        )
-    except ResumeError as exc:
+        if options.selector == RESTORE_ALL:
+            plan = restore_all(
+                agent_dir,
+                project_root,
+                now=now,
+                write=print,
+                terminal=terminal,
+                force=options.force,
+                days=options.days,
+            )
+        else:
+            plan = run_restore(
+                agent_dir,
+                project_root,
+                options.selector,
+                now=now,
+                write=print,
+                days=options.days,
+                force=options.force,
+                width=options.width or shutil.get_terminal_size((100, 24)).columns,
+                messages=options.messages,
+                gates=options.gates,
+                terminal=terminal,
+                here=options.here,
+            )
+        if isinstance(plan, LaneRestore):
+            message = restore_in_lane(agent_dir, project_root, plan, attach=terminal)
+            if message:
+                print(message)
+            return 0
+    except (ResumeError, SessionStateError, TmuxAgentError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     if plan is None:
@@ -2522,6 +2954,9 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 address = stopped.get("name") or f"{stopped['provider']}:{stopped['session_id']}"
                 print(f"{address} stopped")
+            return 0
+        if options.command_name == "name":
+            print(name_current_session(_current_agent_dir(), options.new_name))
             return 0
         if options.command_name == "rename":
             record = rename_session(

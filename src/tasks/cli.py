@@ -427,6 +427,25 @@ def _session_surface(agent_dir: Path, key) -> str:
     return f"Session: {handle} | task: {number} ({task_file.parent.name})"
 
 
+def _session_name_surface(agent_dir: Path, key) -> str:
+    """Name the session (from `--name` at launch) and say how to come back to it."""
+    from session_cli import claim_launch_name
+
+    _path, record = ensure_session_record(agent_dir, key.provider, key.session_id)
+    name = record.get("name")
+    if not name:
+        try:
+            name = claim_launch_name(agent_dir, key)
+        except (OSError, ValueError, SessionStateError) as exc:
+            print(f"Warning: the launch name was not recorded: {exc}", file=sys.stderr)
+    if not name:
+        return (
+            "This session: unnamed (its first task names it, "
+            "or `pb-session name <name>` now)"
+        )
+    return f"This session: {name} (after a drop: pb-session restore {name})"
+
+
 def _session_store_surface(agent_dir: Path) -> str:
     """Report recognized records and inert legacy/malformed directories."""
     sessions = agent_dir / "sessions"
@@ -1560,6 +1579,20 @@ def main():
             )
             sys.exit(1)
 
+        # The first task a session activates names it, so after a dropped
+        # connection the person restores it by a name they know.
+        try:
+            from session_cli import claim_session_name, task_session_name
+
+            wanted = os.environ.get("PLAYBOOK_SESSION_NAME", "").strip() or task_session_name(
+                task_file.parent.name, monitor=claimed.is_monitor_board
+            )
+            name = claim_session_name(agent_dir, current_key, wanted, keep_existing=True)
+            print(f"This session: {name} (after a drop: pb-session restore {name})")
+            print()
+        except (OSError, ValueError, SessionStateError) as exc:
+            print(f"Warning: this session was not named: {exc}", file=sys.stderr)
+
         # Workflow rules — deferred from bootstrap to task activation
         from tasks.template import workflow_briefing
         print("=== WORKFLOW ===")
@@ -1749,6 +1782,7 @@ def main():
             print(f"Playbook runtime: UNSAFE — {exc}")
         if key is not None:
             print(_session_surface(agent_dir, key))
+            print(_session_name_surface(agent_dir, key))
             print(
                 "Native identity authority: the Session line above names this process; "
                 "task.md ## Sessions entries are ownership history, not your current identity."
@@ -2331,48 +2365,11 @@ def main():
 
         sys.exit(result.returncode)
 
-    elif cmd == "resume":
-        # tasks resume [<N>|monitor] [--print]
-        # Bring back the agent conversation that last owned a task, e.g. after
-        # a reboot. No selector: list open tasks with their sessions.
-        from tasks.resume import (
-            ResumeError,
-            exec_plan,
-            list_candidates,
-            plan_resume,
-            render_candidates,
-        )
+    elif cmd in ("resume", "restore"):
+        # The same restore as `pb-session restore`: one command, every spelling.
+        import session_cli
 
-        print_only = "--print" in cmd_args
-        selectors = [a for a in cmd_args if a != "--print"]
-        if len(selectors) > 1 or any(a.startswith("-") for a in selectors):
-            print("Usage: pb-tasks resume [<N>|monitor] [--print]", file=sys.stderr)
-            sys.exit(1)
-        project_path = find_project_root()
-        agent_dir = resolve_agent_dir(project_path)
-        if not selectors:
-            for line in render_candidates(list_candidates(agent_dir)):
-                print(line)
-            return
-        try:
-            plan = plan_resume(agent_dir, project_path, selectors[0])
-        except ResumeError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-        if print_only:
-            print(plan.shell_line())
-            return
-        key = plan.target.key
-        print(
-            f"Resuming task {plan.target.task_number} ({key.provider}:{key.session_id}) in {plan.cwd}",
-            file=sys.stderr,
-        )
-        try:
-            exec_plan(plan, project_path)
-        except OSError as exc:
-            print(f"Error: could not start {plan.argv[0]}: {exc}", file=sys.stderr)
-            print(f"  Run it yourself: {plan.shell_line()}", file=sys.stderr)
-            sys.exit(1)
+        sys.exit(session_cli.main(["restore", *cmd_args]))
 
     elif cmd == "context":
         if not cmd_args:

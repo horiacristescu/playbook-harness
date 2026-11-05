@@ -1,12 +1,9 @@
-"""Resume a task's agent conversation by task number.
+"""`pb-session restore`: bring sessions back by name after a dropped connection or a reboot.
 
-After a reboot the task number is the handle a person remembers, and task.md
-already names the provider-native session that owns the work (`## Sessions`,
-latest entry last). Everything here is derived from task.md, session records,
-chat_log.md and the provider's own transcript store; nothing new is persisted.
-
-Lanes are tmux boxes owned by a monitor, so `resume monitor` brings back only
-the monitor. Its prompt tells it to recover its lanes from its own board.
+The list comes from chat_log.md, the names from session records, and a task
+number still finds its last session through task.md's `## Sessions`, however
+long ago it ran. Nothing new is persisted here. `pb-tasks resume|restore`,
+`pb-claude restore|resume` and `pb-codex restore` run the same restore.
 """
 
 from __future__ import annotations
@@ -82,7 +79,7 @@ class ResumeTarget:
     task_name: str
     key: SessionKey
     monitor: bool
-    via: str  # what the person typed after `pb-tasks resume`, normalized
+    via: str  # what the person typed to find it, normalized
 
 
 @dataclass(frozen=True)
@@ -94,18 +91,6 @@ class ResumePlan:
 
     def shell_line(self) -> str:
         return f"cd {shlex.quote(self.cwd)} && {shlex.join(self.argv)}"
-
-
-@dataclass(frozen=True)
-class ResumeCandidate:
-    """One resumable session (a lane) and the open tasks it owns."""
-
-    key: SessionKey
-    task_numbers: tuple[str, ...]
-    task_names: tuple[str, ...]
-    monitor: bool
-    last_timestamp: str | None
-    last_message: str | None
 
 
 @dataclass(frozen=True)
@@ -122,6 +107,21 @@ class RecentSession:
     recent_gates: tuple[str, ...]  # gates checked in `task_number`, oldest first
     running: bool = False
     folder: Path | None = None  # where the provider says it ran, when known
+    in_lane: bool = False  # it last ran in a tmux lane (its record is managed)
+    lane_running: bool = False  # its agent runs in that lane right now
+
+
+@dataclass(frozen=True)
+class LaneRestore:
+    """Bring one conversation back in a tmux lane, under its name.
+
+    `mode` is "attach" (its lane runs it now) or "resume" (a lane
+    conversation that stopped).
+    """
+
+    key: SessionKey
+    name: str | None
+    mode: str
 
 
 def _task_files(agent_dir: Path) -> Iterator[tuple[str, str, Path]]:
@@ -155,7 +155,7 @@ def _open_monitor(agent_dir: Path) -> ResumeTarget:
     if not boards:
         raise ResumeError(
             "no open monitor task (an in-progress monitor board with an owner); "
-            "resume by number with `pb-tasks resume <N>`"
+            "restore one by task number with `pb-session restore <N>`"
         )
     if len(boards) > 1:
         listed = ", ".join(
@@ -163,9 +163,17 @@ def _open_monitor(agent_dir: Path) -> ResumeTarget:
             for board in boards
         )
         raise ResumeError(
-            f"several open monitor tasks: {listed}; choose one with `pb-tasks resume <N>`"
+            f"several open monitor tasks: {listed}; choose one with `pb-session restore <N>`"
         )
     return boards[0]
+
+
+def _task_selector(selector: str) -> str | None:
+    """`monitor`, or a task number without its `T`; None for anything else."""
+    if selector == MONITOR_SELECTOR:
+        return selector
+    number = selector[1:] if selector[:1] in ("T", "t") else selector
+    return number if number.isdigit() else None
 
 
 def resolve_target(agent_dir: Path, selector: str) -> ResumeTarget:
@@ -173,7 +181,7 @@ def resolve_target(agent_dir: Path, selector: str) -> ResumeTarget:
     if selector == MONITOR_SELECTOR:
         return _open_monitor(agent_dir)
     if not selector.isdigit():
-        raise ResumeError(f"resume takes a task number or 'monitor', not {selector!r}")
+        raise ResumeError(f"not a task number or 'monitor': {selector!r}")
     try:
         task_file = resolve_task_document(agent_dir, selector)
         document = _parse(task_file)
@@ -187,24 +195,6 @@ def resolve_target(agent_dir: Path, selector: str) -> ResumeTarget:
     name = task_file.parent.name.partition("-")[2]
     # Done tasks keep their history, so their last session is still the one to resume.
     return ResumeTarget(number, name, document.sessions[-1], document.is_monitor_board, number)
-
-
-def task_prompt(target: ResumeTarget) -> str:
-    return (
-        f"Resumed with `pb-tasks resume {target.via}` (task {target.task_number}), "
-        "probably after a restart. Run `pb-tasks status`, then wait for the user."
-    )
-
-
-def monitor_prompt(target: ResumeTarget) -> str:
-    number = target.task_number
-    return (
-        f"Resumed with `pb-tasks resume {target.via}` after a restart, probably a reboot. "
-        f"You are the monitor for task {number}. Follow the monitor skill's recovery steps: "
-        f"re-read task {number}, check every lane with `pb-session status`, resume lanes that "
-        "were running within their approved scope, re-arm your watch, then report what you "
-        "restored and what still needs the user."
-    )
 
 
 def transcript_problem(provider: str, session_id: str, cwd: str) -> str | None:
@@ -246,41 +236,6 @@ def _session_record(agent_dir: Path, key: SessionKey) -> dict | None:
     return record
 
 
-def plan_resume(agent_dir: Path, project_root: Path, selector: str) -> ResumePlan:
-    """Build the exact command that resumes the selected task's conversation."""
-    import session_cli
-
-    target = resolve_target(agent_dir, selector)
-    key = target.key
-    record = _session_record(agent_dir, key)
-    prompt = monitor_prompt(target) if target.monitor else task_prompt(target)
-    try:
-        route = session_cli.native_resume_route(
-            record,
-            key.provider,
-            key.session_id,
-            fallback_cwd=project_root,
-            prompt=prompt,
-            attach=True,
-        )
-    except SessionStateError as exc:
-        raise ResumeError(str(exc)) from exc
-    assert route is not None  # a fallback cwd is always supplied
-    cwd, argv = route
-    if not Path(cwd).is_dir():
-        # Do not fall back to another directory: Claude files conversations
-        # by cwd, so it would look in the wrong place and mislead.
-        raise ResumeError(
-            f"cannot resume task {target.task_number}: the session's recorded directory "
-            f"{cwd} no longer exists"
-        )
-    problem = transcript_problem(key.provider, key.session_id, cwd)
-    if problem:
-        raise ResumeError(f"cannot resume task {target.task_number}: {problem}")
-    managed = bool(record and record.get("managed") is True)
-    return ResumePlan(target, cwd, argv, managed)
-
-
 def exec_plan(
     plan: ResumePlan, project_root: Path, environ: Mapping[str, str] = os.environ
 ) -> NoReturn:
@@ -295,80 +250,8 @@ def exec_plan(
     os.execvpe(plan.argv[0], plan.argv, env)
 
 
-def _latest_human_messages(agent_dir: Path) -> dict[tuple[str, str], tuple[str, str]]:
-    from tasks.chat_state import parse_chat_entries
-
-    chat_log = agent_dir / "chat_log.md"
-    if chat_log.is_symlink() or not chat_log.is_file():
-        return {}
-    latest: dict[tuple[str, str], tuple[str, str]] = {}
-    for entry in parse_chat_entries(chat_log.read_text(encoding="utf-8")):
-        if not (entry.marker.startswith("M") and entry.provider and entry.session_id):
-            continue
-        text = _display_message(entry.body)
-        if not text or " ".join(entry.body.split()).startswith(_SYNTHETIC_MESSAGES):
-            continue
-        latest[(entry.provider, entry.session_id)] = (entry.timestamp, text)
-    return latest
-
-
-def list_candidates(agent_dir: Path) -> list[ResumeCandidate]:
-    """Sessions owning open tasks, one per session, newest human message first.
-
-    One session can own several tasks; listing it once keeps two tabs from
-    resuming the same conversation.
-    """
-    owned: dict[SessionKey, list[tuple[str, str, bool]]] = {}
-    for number, name, task_file in _task_files(agent_dir):
-        try:
-            document = _parse(task_file)
-            owner = document.live_owner
-        except (OSError, TaskDocumentError):
-            continue
-        if owner is not None:
-            owned.setdefault(owner, []).append((number, name, document.is_monitor_board))
-    latest = _latest_human_messages(agent_dir)
-    candidates = [
-        ResumeCandidate(
-            owner,
-            tuple(number for number, _, _ in tasks),
-            tuple(name for _, name, _ in tasks),
-            any(monitor for _, _, monitor in tasks),
-            *latest.get((owner.provider, owner.session_id), (None, None)),
-        )
-        for owner, tasks in owned.items()
-    ]
-    candidates.sort(key=lambda candidate: candidate.last_timestamp or "", reverse=True)
-    return candidates
-
-
 def _clip(text: str, width: int = _MESSAGE_WIDTH) -> str:
     return text if len(text) <= width else text[: width - 1].rstrip() + "…"
-
-
-def render_candidates(candidates: list[ResumeCandidate]) -> list[str]:
-    if not candidates:
-        return [
-            "No open task has a recorded session to resume.",
-            "`pb-session restore` lists every recent session here, with or without a task.",
-        ]
-    lines = ["Open tasks with a resumable session, newest activity first:", ""]
-    for candidate in candidates:
-        tag = " [monitor]" if candidate.monitor else ""
-        when = candidate.last_timestamp or "no recorded message"
-        lines.append(
-            f"  {', '.join(candidate.task_numbers)}  {', '.join(candidate.task_names)}{tag}  "
-            f"{candidate.key.provider}  {when}"
-        )
-        if candidate.last_message:
-            lines.append(f"       {_clip(candidate.last_message)}")
-    lines += [
-        "",
-        "Resume one with `pb-tasks resume <N>`, or `pb-tasks resume monitor` "
-        "for the open monitor task.",
-        "`pb-session restore` lists every recent session here, with or without a task.",
-    ]
-    return lines
 
 
 # ── pb-session restore ───────────────────────────────────────────────────────
@@ -394,6 +277,26 @@ def _keep_latest(seen: dict, field: str, stamp: tuple[datetime, int], value: obj
         seen[field] = (stamp, value)
 
 
+def _conversation_facts(agent_dir: Path, key: SessionKey) -> tuple[str | None, bool]:
+    """Its name now, and whether it ran in a lane.
+
+    From the record, not the chat rows: a name in older rows may since have
+    moved to a newer session.
+    """
+    import session_cli
+
+    try:
+        path = session_directory(agent_dir, key) / "session.json"
+        if path.is_symlink() or not path.is_file():
+            return None, False
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("provider") != key.provider or record.get("session_id") != key.session_id:
+            return None, False
+        return session_cli.conversation_name(agent_dir, record), record.get("managed") is True
+    except (OSError, ValueError, SessionStateError, AttributeError):
+        return None, False
+
+
 def list_recent_sessions(
     agent_dir: Path,
     *,
@@ -408,7 +311,7 @@ def list_recent_sessions(
     sessions that only ever received generated prompts (test launches,
     bootstrap-only lanes) are left out.
     """
-    from tasks.chat_state import _recorded_session_name, parse_chat_entries
+    from tasks.chat_state import parse_chat_entries
 
     chat_log = agent_dir / "chat_log.md"
     if chat_log.is_symlink() or not chat_log.is_file():
@@ -461,14 +364,14 @@ def list_recent_sessions(
                 status = _parse(task_file).status
             except (OSError, TaskDocumentError):
                 pass
+        session_name, in_lane = _conversation_facts(agent_dir, key)
         found.append((
             stamp,
             RecentSession(
                 key=key,
                 last_activity=stamp[0],
-                # A lane named after its rows were logged (`pb-session rename`)
-                # only carries the name in its session record.
-                lane=seen["lane"][1] if "lane" in seen else _recorded_session_name(agent_dir, key),
+                lane=session_name,
+                in_lane=in_lane,
                 task_number=number,
                 task_name=name,
                 task_status=status,
@@ -660,19 +563,15 @@ def _age(delta: timedelta) -> str:
 def restore_handles(sessions: list[RecentSession]) -> list[str]:
     """What to type after `pb-session restore` for each row, in list order.
 
-    The task number when the row has one (newest row per task), else the
-    shortest session-ID prefix of at least 8 characters that no other listed
-    session shares (Codex IDs start with a timestamp, so lanes launched
-    together share their first 8). Neither shifts when other sessions get new
-    activity, unlike a row number.
+    The session's name; an unnamed one gets the shortest session-ID prefix of
+    at least 8 characters that no other listed session shares (Codex IDs start
+    with a timestamp, so lanes launched together share their first 8).
     """
     ids = [session.key.session_id for session in sessions]
     handles: list[str] = []
-    claimed: set[str] = set()
     for session in sessions:
-        if session.task_number and session.task_number not in claimed:
-            claimed.add(session.task_number)
-            handles.append(session.task_number)
+        if session.lane:
+            handles.append(session.lane)
             continue
         own = session.key.session_id
         length = 8
@@ -691,60 +590,36 @@ def render_recent_sessions(
     days: int,
     project: str,
     width: int = 100,
-    detail: bool = True,
+    detail: bool = False,
 ) -> list[str]:
-    """One block per session: where it was (task, last gates) and what you last said.
+    """One line per session: its name, where it ran, whether it runs now.
 
-    Every line fits in `width` columns, so a block never wraps.
+    With `detail`, the last checked gates and messages follow each line.
+    Every line fits in `width` columns, so nothing wraps.
     """
-    indent = " " * 12
+    indent = " " * 4
     handles = restore_handles(sessions)
-    live = [handle for handle, session in zip(handles, sessions) if session.running]
-    lines = [_clip(f"Sessions in {project} from the last {days} days, newest first:", width)]
-    if live:
+    column = max(len(handle) for handle in handles)
+    lines = [_clip(f"Sessions in {project} from the last {days} days, newest first:", width), ""]
+    for handle, session in zip(handles, sessions):
+        place = "lane" if session.in_lane else "terminal"
+        state = "running" if session.running or session.lane_running else "stopped"
         lines.append(_clip(
-            f"Running now: {', '.join(live)}. The rest are stopped and can be resumed here.",
+            f"  {handle:<{column}}  {place:<8}  {state:<7}  {session.key.provider:<6}  "
+            f"{_age(now - session.last_activity)}",
             width,
         ))
-    else:
-        lines.append(_clip("None of these is running now; any of them can be resumed here.", width))
-    lines.append("")
-    for handle, session in zip(handles, sessions):
-        parts = [
-            f"  {handle:<8}",
-            f"{_age(now - session.last_activity):>8}",
-            f"{session.key.provider:<6}",
-        ]
-        if session.lane:
-            parts.append(session.lane)
-        if session.task_number:
-            task = f"T{session.task_number}"
-            if session.task_name:
-                task += f" {session.task_name}"
-            if session.task_status:
-                task += f" ({session.task_status})"
-            parts.append(task)
-        if session.running:
-            parts.append("[running]")
-        lines.append(_clip("  ".join(parts).rstrip(), width))
-        body = [f"✓ {gate}" for gate in session.recent_gates]
-        body += [f"> {message}" for message in session.recent_messages]
         if detail:
+            body = [f"✓ {gate}" for gate in session.recent_gates]
+            body += [f"> {message}" for message in session.recent_messages]
             lines += [_clip(indent + line, width) for line in body or ["(no message)"]]
-            lines.append("")
-    if not detail:
-        lines.append("")
+    lines.append("")
     return lines
 
 
 def pick_session(sessions: list[RecentSession], selector: str) -> RecentSession:
-    """The row `selector` names: a task number (`188`, `T188`), a lane name, or an ID prefix."""
-    task = selector[1:] if selector[:1] in ("T", "t") and selector[1:].isdigit() else selector
-    if task.isdigit():
-        for session in sessions:  # newest first, so the task's latest session wins
-            if session.task_number and int(session.task_number) == int(task):
-                return session
-    for session in sessions:  # lane names get reused; the newest holder wins
+    """The row `selector` names: a session name, the start of an ID, or a task number."""
+    for session in sessions:
         if session.lane == selector:
             return session
     matches = [session for session in sessions if session.key.session_id.startswith(selector)]
@@ -752,12 +627,187 @@ def pick_session(sessions: list[RecentSession], selector: str) -> RecentSession:
         return matches[0]
     if len(matches) > 1:
         raise ResumeError(f"{selector!r} matches {len(matches)} sessions, type more of the ID")
+    task = selector[1:] if selector[:1] in ("T", "t") and selector[1:].isdigit() else selector
     if task.isdigit():
-        raise ResumeError(
-            f"no session worked on task {task} in this window "
-            f"(`pb-tasks resume {int(task)}` reaches older tasks)"
+        for session in sessions:  # newest first, so the task's latest session wins
+            if session.task_number and int(session.task_number) == int(task):
+                return session
+        raise ResumeError(f"no session worked on task {task} in this window")
+    raise ResumeError(f"no session is named {selector!r}")
+
+
+def _lane_runs(agent_dir: Path, key: SessionKey) -> bool:
+    import session_cli
+
+    return session_cli.lane_session_running(agent_dir, key)
+
+
+def _named_record(
+    agent_dir: Path,
+    project_root: Path,
+    name: str,
+    now: datetime,
+    folder: Callable[[str, str], Path | None],
+) -> RecentSession | None:
+    """A named session older than the listing window still answers to its name."""
+    import session_cli
+
+    try:
+        record = session_cli.resolve_conversation(agent_dir, name)
+    except SessionStateError:
+        return None
+    key = SessionKey.from_values(record["provider"], record["session_id"])
+    where = folder(key.provider, key.session_id)
+    if where is not None and not _inside(where, project_root):
+        return None
+    return RecentSession(
+        key=key,
+        last_activity=now,
+        lane=name,
+        task_number=None,
+        task_name=None,
+        task_status=None,
+        recent_messages=(),
+        recent_gates=(),
+        folder=where,
+        in_lane=record.get("managed") is True,
+    )
+
+
+def _task_session(agent_dir: Path, selector: str, now: datetime) -> RecentSession:
+    """A task's last session, however long ago it ran: task.md's `## Sessions` keeps it.
+
+    Not filtered by folder: the task belongs to this project wherever its
+    session was started.
+    """
+    import session_cli
+
+    target = resolve_target(agent_dir, selector)
+    record = _session_record(agent_dir, target.key) or {}
+    return RecentSession(
+        key=target.key,
+        last_activity=now,
+        lane=session_cli.conversation_name(agent_dir, record) if record else None,
+        task_number=target.task_number,
+        task_name=target.task_name,
+        task_status=None,
+        recent_messages=(),
+        recent_gates=(),
+        in_lane=record.get("managed") is True,
+    )
+
+
+Running = Callable[[Iterable[SessionKey]], set[SessionKey]]
+Folder = Callable[[str, str], Path | None]
+LaneRunning = Callable[[Path, SessionKey], bool]
+
+
+def restore_candidates(
+    agent_dir: Path,
+    project_root: Path,
+    *,
+    now: datetime,
+    days: int = RESTORE_DAYS,
+    messages: int = 0,
+    gates: int = 0,
+    running: Running = running_session_keys,
+    folder: Folder = session_folder,
+    lane_running: LaneRunning = _lane_runs,
+) -> tuple[list[RecentSession], list[RecentSession]]:
+    """This project's recent sessions, with what runs now; and those logged here that ran elsewhere."""
+    listed = list_recent_sessions(agent_dir, now=now, days=days, messages=messages, gates=gates)
+    # The chat log can hold sessions that ran elsewhere (a hook pointed at this
+    # project from another folder); only this project's own are offered.
+    located = [
+        replace(session, folder=folder(session.key.provider, session.key.session_id))
+        for session in listed
+    ]
+    sessions = [s for s in located if s.folder is None or _inside(s.folder, project_root)]
+    elsewhere = [s for s in located if s not in sessions]
+    live = running(session.key for session in sessions)
+    sessions = [
+        replace(
+            session,
+            running=session.key in live,
+            lane_running=session.in_lane and lane_running(agent_dir, session.key),
         )
-    raise ResumeError(f"no recent session ID starts with {selector!r}")
+        for session in sessions
+    ]
+    return sessions, elsewhere
+
+
+def find_restorable(
+    agent_dir: Path,
+    project_root: Path,
+    sessions: list[RecentSession],
+    selector: str,
+    *,
+    now: datetime,
+    running: Running = running_session_keys,
+    folder: Folder = session_folder,
+    lane_running: LaneRunning = _lane_runs,
+) -> RecentSession:
+    """The session `selector` names: in the list, by a name older than it, or by task."""
+    try:
+        return pick_session(sessions, selector)
+    except ResumeError as exc:
+        reason = str(exc)
+    picked = _named_record(agent_dir, project_root, selector, now, folder)
+    task = _task_selector(selector)
+    if picked is None and task is not None:
+        try:
+            picked = _task_session(agent_dir, task, now)
+        except ResumeError as task_exc:
+            reason = f"{reason}, and {task_exc}" if task == MONITOR_SELECTOR else str(task_exc)
+    if picked is None:
+        raise ResumeError(reason)
+    return replace(
+        picked,
+        running=bool(running([picked.key])),
+        lane_running=picked.in_lane and lane_running(agent_dir, picked.key),
+    )
+
+
+def route_restore(
+    agent_dir: Path,
+    project_root: Path,
+    picked: RecentSession,
+    *,
+    force: bool = False,
+    terminal: bool = True,
+    here: bool = False,
+) -> ResumePlan | LaneRestore:
+    """How `picked` comes back: the way it was.
+
+    A lane conversation comes back in its lane (a new one under the same name
+    if the old one died), a plain session in this terminal. When there is no
+    terminal to hand over (`terminal` false: an agent ran this), a plain
+    session is not moved into a lane, which would be for good (a lane
+    conversation stays one): the person is told the one command for their
+    terminal. `here` brings even a lane conversation back in this terminal.
+    """
+    handle = picked.lane or picked.key.session_id[:8]
+    if picked.lane_running:
+        if not here:
+            return LaneRestore(picked.key, picked.lane, "attach")
+        raise ResumeError(
+            f"{handle} is running in its lane; to open it here, stop it there first: "
+            f"`pb-session stop {handle}`"
+        )
+    if picked.running and not force:
+        raise ResumeError(
+            f"{handle} looks open in another terminal; add --force to open it here too"
+        )
+    if picked.in_lane and not here:
+        return LaneRestore(picked.key, picked.lane, "resume")
+    if terminal or here:
+        return plan_restore(agent_dir, project_root, picked)
+    address = picked.lane or f"{picked.key.provider}:{picked.key.session_id}"
+    raise ResumeError(
+        f"{handle} ran in a plain terminal, and this ran inside an agent, which has no "
+        f"terminal to give it. In your terminal: `pb-session restore {address}` "
+        f"(or, to move it into a lane for good: `pb-session adopt {address}`)"
+    )
 
 
 def run_restore(
@@ -770,61 +820,57 @@ def run_restore(
     days: int = RESTORE_DAYS,
     force: bool = False,
     width: int = 100,
-    messages: int = RESTORE_MESSAGES,
-    gates: int = RESTORE_GATES,
-    running: Callable[[Iterable[SessionKey]], set[SessionKey]] = running_session_keys,
-    folder: Callable[[str, str], Path | None] = session_folder,
-) -> ResumePlan | None:
-    """Without a selector, print this project's recent sessions; with one, plan its resume."""
+    messages: int = 0,
+    gates: int = 0,
+    terminal: bool = True,
+    here: bool = False,
+    running: Running = running_session_keys,
+    folder: Folder = session_folder,
+    lane_running: LaneRunning = _lane_runs,
+) -> ResumePlan | LaneRestore | None:
+    """Without a selector, list this project's recent sessions; with one, say how it comes back."""
     print_line = write
 
     def write(line: str) -> None:  # every report line fits in `width` columns
         print_line(_clip(line, width))
 
-    listed = list_recent_sessions(agent_dir, now=now, days=days, messages=messages, gates=gates)
-    # The chat log can hold sessions that ran elsewhere (a hook pointed at this
-    # project from another folder); only this project's own are offered.
-    located = [
-        replace(session, folder=folder(session.key.provider, session.key.session_id))
-        for session in listed
-    ]
-    sessions = [s for s in located if s.folder is None or _inside(s.folder, project_root)]
-    elsewhere = [s for s in located if s not in sessions]
+    sessions, elsewhere = restore_candidates(
+        agent_dir, project_root, now=now, days=days, messages=messages, gates=gates,
+        running=running, folder=folder, lane_running=lane_running,
+    )
+    if selector is not None:
+        try:
+            picked = find_restorable(
+                agent_dir, project_root, sessions, selector, now=now,
+                running=running, folder=folder, lane_running=lane_running,
+            )
+        except ResumeError as exc:
+            print_line(f"Nothing restored: {exc}.")  # the reason in full, never clipped
+            write("")
+        else:
+            return route_restore(
+                agent_dir, project_root, picked, force=force, terminal=terminal, here=here
+            )
     if not sessions:
         write(f"No sessions in {project_root.name} from the last {days} days.")
         return None
-    live = running(session.key for session in sessions)
-    sessions = [replace(session, running=session.key in live) for session in sessions]
-    picked = None
-    if selector is not None:
-        try:
-            picked = pick_session(sessions, selector)
-        except ResumeError as exc:
-            write(f"Nothing resumed: {exc}.")
-            write("")
-    if picked is None:
-        for line in render_recent_sessions(
-            sessions,
-            now=now,
-            days=days,
-            project=project_root.name,
-            width=width,
-            detail=messages > 0 or gates > 0,
-        ):
-            write(line)
-        for other in elsewhere:
-            home = str(Path.home())
-            where = str(other.folder)
-            where = "~" + where[len(home):] if where.startswith(home + os.sep) else where
-            write(
-                f"Left out {other.key.provider} {other.key.session_id[:8]}: logged here, "
-                f"but it ran in {where}."
-            )
-        write("Resume one here with `pb-session restore <task number, lane name or ID>`.")
-        return None
-    label = f"{picked.key.provider}:{picked.key.session_id}"
-    if picked.running and not force:
-        raise ResumeError(
-            f"{label} looks open in another terminal; add --force to resume it here too"
+    for line in render_recent_sessions(
+        sessions,
+        now=now,
+        days=days,
+        project=project_root.name,
+        width=width,
+        detail=messages > 0 or gates > 0,
+    ):
+        write(line)
+    for other in elsewhere:
+        home = str(Path.home())
+        where = str(other.folder)
+        where = "~" + where[len(home):] if where.startswith(home + os.sep) else where
+        write(
+            f"Left out {other.key.provider} {other.key.session_id[:8]}: logged here, "
+            f"but it ran in {where}."
         )
-    return plan_restore(agent_dir, project_root, picked)
+    write("Bring one back with `pb-session restore <name>`.")
+    write("Everything that stopped: `pb-session restore all`.")
+    return None

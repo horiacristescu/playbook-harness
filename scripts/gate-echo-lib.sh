@@ -230,6 +230,27 @@ print(record.parent)
 PY
 }
 
+# claim_launch_name AGENT_DIR PROVIDER SESSION_ID
+# Record PLAYBOOK_SESSION_NAME (`pb-claude --name X`) as this session's name,
+# unless it already has one. A failure is reported, never fatal.
+claim_launch_name() {
+    local agent_dir="$1" provider session_id="$3" lib_dir
+    provider=$(canonical_session_provider "$2") || return 1
+    lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    PYTHONPATH="$lib_dir/../src${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 - "$agent_dir" "$provider" "$session_id" <<'PY'
+import sys
+from pathlib import Path
+from provider.session_state import SessionKey
+from session_cli import claim_launch_name
+
+try:
+    claim_launch_name(Path(sys.argv[1]), SessionKey.from_values(sys.argv[2], sys.argv[3]))
+except Exception as exc:  # noqa: BLE001 - a hook must not fail the session's start
+    print(f"Playbook: session name not recorded: {exc}", file=sys.stderr)
+PY
+}
+
 # validate_task_authority AGENT_DIR PROVIDER SESSION_ID
 # Echo the authoritative task.md only when current_state and the final
 # provider-qualified Sessions entry agree. A missing cache is simply unbound;

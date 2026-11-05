@@ -29,10 +29,37 @@ if [ "${1:-}" = "loop" ]; then
     shift
     exec python3 "$RUNTIME_ROOT/scripts/codex-loop.py" "$@"
 fi
+# `pb-codex restore` and a bare `pb-codex resume` are `pb-session restore`;
+# `pb-codex resume <id|name> ...` stays Codex's own. Before the unsets below:
+# restore reads them to tell an agent's shell from a person's terminal.
+if [ "${1:-}" = "restore" ] || { [ "${1:-}" = "resume" ] && [ $# -eq 1 ]; }; then
+    shift
+    PYTHONPATH="$RUNTIME_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m session_cli restore "$@"
+fi
 
-# A nested agent must not inherit the parent's provider or normalized identity.
+# A nested agent must not inherit the parent's provider, identity or name.
 unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
-    ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE
+    ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE PLAYBOOK_SESSION_NAME
+# `--name X` is Playbook's, not Codex's: bootstrap names the session X, so after
+# a drop `pb-session restore X` brings it back.
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --name)
+            [ $# -ge 2 ] || { echo "pb-codex: --name needs a value" >&2; exit 2; }
+            export PLAYBOOK_SESSION_NAME="$2"; shift 2 ;;
+        --name=*) export PLAYBOOK_SESSION_NAME="${1#--name=}"; shift ;;
+        --) args+=("$@"); break ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+set -- ${args[@]+"${args[@]}"}
+# Nor its runtime markers: under them the new agent thinks it is a child
+# (Claude refuses to start under CLAUDECODE). Keep in step with
+# PARENT_RUNTIME_ENV_NAMES in src/provider/session_identity.py.
+unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT \
+    CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ATTENDED \
+    CLAUDE_PID CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED
 export PLAYBOOK_PROVIDER="codex"
 export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
 

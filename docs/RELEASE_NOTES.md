@@ -1,5 +1,34 @@
 # Playbook Harness release notes
 
+## Restore sessions by name — 2026-11-05
+
+Getting your sessions back after a dropped SSH connection or a reboot no
+longer needs a task number or a session ID. Every session has a name:
+`monitor`, the short name of its first task, or the one you gave it with
+`pb-claude --name X`, `pb-codex --name X` or `pb-session name X`. A launch
+name is recorded as the session starts, so it holds even if the agent never
+bootstraps. Bootstrap prints the current session's name.
+
+```bash
+pb-session restore            # this project's sessions, by name
+pb-session restore monitor    # one, back the way it was
+pb-session restore all        # every lane that died, then the monitor here
+```
+
+A lane conversation comes back in its lane, in a new one with the same name
+if the old one died. A plain session comes back in the terminal you type the
+command in. `restore all` brings back only lanes whose agent died with their
+tmux server, never ones you stopped, and running it twice starts nothing
+twice. When an agent runs restore, the lanes come back, but a plain session
+stays put and the agent is given the command for your terminal.
+`pb-tasks restore`, `pb-tasks resume`, `pb-claude restore|resume` and
+`pb-codex restore` are the same command. `pb-tasks resume <N>|monitor` and
+its `--print` are gone; a task number still works as a name.
+
+Session records now carry `lost_at` when a lane's agent died. Older runtimes
+refuse records with fields they don't know, so don't run an older install
+against a project this version has used.
+
 ## Codex reminder loop follows one session — 2026-10-20
 
 `pb-codex loop` is now armed against one session ID and stops when the window

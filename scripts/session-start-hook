@@ -49,6 +49,11 @@ if [ -n "$PROJECT_DIR" ]; then
 
     # Provision session directory for this session
     SESSION_DIR="$(ensure_session_dir "$AGENT_DIR" "$PROVIDER" "$SESSION_ID")"
+    # Its launch name (`pb-claude --name X`), recorded now: `pb-session
+    # restore X` finds it even if the agent never bootstraps.
+    if [ -n "${PLAYBOOK_SESSION_NAME:-}" ]; then
+        claim_launch_name "$AGENT_DIR" "$PROVIDER" "$SESSION_ID" || true
+    fi
 fi
 
 exit 0

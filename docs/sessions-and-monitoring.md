@@ -159,19 +159,23 @@ reboot.
 
 ## Recover after interruption
 
-The session record helps you find a conversation again. It does not restart
-the process.
+A dropped SSH connection kills what ran in that terminal. A reboot kills
+the lanes too. The conversations survive with the provider, and each session
+has a name, so getting them back takes one command you don't have to look up.
 
-After a reboot, `pb-session list` can still show which conversations existed,
-and `pb-session status` provides the native route needed to resume one. The
-human or agent then decides which sessions are still worth restoring.
+```bash
+pb-session restore            # what this project had, by name
+pb-session restore monitor    # one session, back the way it was
+pb-session restore all        # every lane that died, then the monitor here
+```
 
-`pb-session resume lane-a` resumes the lane's last conversation. If the lane's
-shell is idle, the conversation comes back in that shell. If a reboot ended
-the shell, Playbook builds a new lane with the same name. When you don't know
-which conversation you were in, `pb-session restore` lists recent ones with
-their tasks and your last messages. See the
-[command reference](command-reference.md).
+"The way it was" means a lane conversation comes back in its lane and a plain
+session comes back in the terminal you type it in. A monitor run outside tmux,
+for scrollback and selection, stays outside tmux. Names come from
+`pb-claude --name monitor` at launch, from the session's first task, or from
+`pb-session name X`. An agent asked to restore brings lanes back but leaves a
+plain session alone, since it has no terminal to give it; it tells you the
+command to type instead. See the [command reference](command-reference.md).
 
 Playbook does not keep a second transcript. The provider owns conversation
 history; Playbook keeps the small amount of state needed to find it.

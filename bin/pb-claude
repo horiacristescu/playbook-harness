@@ -21,9 +21,32 @@ fi
 
 PROJECT_ROOT="$(find_project_root)"
 
-# A nested agent must not inherit the parent's provider or normalized identity.
+# `pb-claude restore|resume` is `pb-session restore` (Claude has no such
+# subcommand). It runs before the unsets below: restore reads them to tell an
+# agent's shell from a person's terminal.
+case "${1:-}" in
+    restore|resume)
+        shift
+        PYTHONPATH="$RUNTIME_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m session_cli restore "$@" ;;
+esac
+
+# A nested agent must not inherit the parent's provider, identity or name.
 unset PLAYBOOK_SESSION_ID CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID \
-    ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE
+    ANTIGRAVITY_CONVERSATION_ID PLAYBOOK_BRIDGE_PROVIDER PLAYBOOK_ROLE PLAYBOOK_SESSION_NAME
+# Claude's own `--name X` (its display name) also names the Playbook session:
+# bootstrap records it, so after a drop `pb-session restore X` brings it back.
+previous=""
+for arg in "$@"; do
+    case "$previous" in -n|--name) export PLAYBOOK_SESSION_NAME="$arg" ;; esac
+    case "$arg" in --name=*) export PLAYBOOK_SESSION_NAME="${arg#--name=}" ;; --) break ;; esac
+    previous="$arg"
+done
+# Nor its runtime markers: under them the new agent thinks it is a child
+# (Claude refuses to start under CLAUDECODE). Keep in step with
+# PARENT_RUNTIME_ENV_NAMES in src/provider/session_identity.py.
+unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT \
+    CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ATTENDED \
+    CLAUDE_PID CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED
 export PLAYBOOK_PROVIDER="claude"
 export PLAYBOOK_PROJECT_ROOT="$PROJECT_ROOT"
 

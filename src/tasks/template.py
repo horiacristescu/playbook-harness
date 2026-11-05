@@ -705,9 +705,9 @@ First decisions:
   new --stub <type> <name> [intent]   Create stub (expands on work)
   list [--pending|--recent] List all, open, or latest 3 tasks with status
   status              Show head position for active tasks
-  resume [<N>|monitor] [--print]
-                      Bring back the agent conversation that last owned a task
-                      (e.g. after a reboot); no argument lists open tasks
+  restore [<name>|all]  Bring sessions back after a dropped connection or a reboot
+                      (same as `pb-session restore`; `resume` works too); no
+                      argument lists them
   bootstrap           Orientation: mind map, skills, tasks, recent messages, this reference
 
 Review and analysis:
@@ -841,7 +841,7 @@ Add every new request here immediately as an open gate. Capture first; organize 
 
 Quiet is an inspection signal, not proof of a stall. Record watcher failure or lost visibility separately. A persistent objective can continue the monitoring goal; it does not provide timed wakes.
 
-After a reboot the user brings this monitor back with `pb-tasks resume monitor` in a fresh terminal; then recover each lane from its recovery details below.
+After a reboot the user runs `pb-session restore all` in a fresh terminal: the lanes come back in their lanes, then this monitor in that terminal. Then check each lane against its recovery details below.
 
 ## Lanes
 
